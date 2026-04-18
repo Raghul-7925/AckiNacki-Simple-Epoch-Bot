@@ -2,6 +2,8 @@ import json
 import time
 import os
 from datetime import datetime, timedelta
+from urllib.request import Request, urlopen
+
 from telegram import (
     Bot,
     Update,
@@ -9,7 +11,8 @@ from telegram import (
     InlineKeyboardMarkup,
     InlineKeyboardButton
 )
-from urllib.request import Request, urlopen
+
+# ---------------- CONFIG ----------------
 
 BOT_TOKEN = os.environ.get("BOT_TOKEN")
 KV_URL = os.environ.get("KV_REST_API_URL")
@@ -19,26 +22,17 @@ bot = Bot(token=BOT_TOKEN)
 
 EPOCH_SECONDS = 330
 TOTAL_EPOCHS = 288
-TOTAL_SECONDS = TOTAL_EPOCHS * EPOCH_SECONDS
+TOTAL_SECONDS = EPOCH_SECONDS * TOTAL_EPOCHS
 
 TEMP = {}
 
-# ---------------- KV ----------------
-
-def kv_get(key):
-    try:
-        req = Request(f"{KV_URL}/get/{key}")
-        req.add_header("Authorization", f"Bearer {KV_TOKEN}")
-        res = urlopen(req).read()
-        return json.loads(res).get("result")
-    except:
-        return None
-
+# ---------------- KV (CORRECT) ----------------
 
 def kv_set(key, value):
     req = Request(
-        f"{KV_URL}/set/{key}",
+        f"{KV_URL}/set",
         data=json.dumps({
+            "key": key,
             "value": json.dumps(value)
         }).encode(),
         method="POST"
@@ -48,26 +42,29 @@ def kv_set(key, value):
     urlopen(req)
 
 
-def get_user(chat_id, user_id):
-    key = f"{chat_id}:{user_id}"
-    data = kv_get(key)
+def kv_get(key):
+    try:
+        req = Request(f"{KV_URL}/get/{key}")
+        req.add_header("Authorization", f"Bearer {KV_TOKEN}")
+        res = urlopen(req).read()
 
-    if not data:
-        return {}
+        data = json.loads(res)
+        val = data.get("result")
 
-    if isinstance(data, str):
-        try:
-            data = json.loads(data)
-        except:
+        if not val:
             return {}
 
-    return data
+        return json.loads(val)
 
+    except Exception as e:
+        print("KV ERROR:", e)
+        return {}
+
+def get_user(chat_id, user_id):
+    return kv_get(f"{chat_id}:{user_id}")
 
 def save_user(chat_id, user_id, data):
-    key = f"{chat_id}:{user_id}"
-    kv_set(key, data)
-
+    kv_set(f"{chat_id}:{user_id}", data)
 
 # ---------------- MENU ----------------
 
@@ -81,7 +78,6 @@ def get_menu():
         resize_keyboard=True
     )
 
-
 # ---------------- PART ----------------
 
 def get_part(epoch):
@@ -92,16 +88,13 @@ def get_part(epoch):
     else:
         return "Part 3 (Low reward)"
 
-
 # ---------------- STATUS ----------------
 
 def build_status(start_time):
     now = int(time.time())
     elapsed = now - start_time
 
-    epoch = int(elapsed // EPOCH_SECONDS) + 1
-    if epoch > TOTAL_EPOCHS:
-        epoch = TOTAL_EPOCHS
+    epoch = min((elapsed // EPOCH_SECONDS) + 1, TOTAL_EPOCHS)
 
     part = get_part(epoch)
 
@@ -117,10 +110,10 @@ def build_status(start_time):
     p2 = start_time + (96 * EPOCH_SECONDS)
     p3 = start_time + (192 * EPOCH_SECONDS)
 
-    def to_ist(ts):
+    def ist(ts):
         return (datetime.utcfromtimestamp(ts) + timedelta(hours=5, minutes=30)).strftime('%I:%M %p')
 
-    reset_dt = datetime.utcfromtimestamp(start_time + TOTAL_SECONDS) + timedelta(hours=5, minutes=30)
+    reset = datetime.utcfromtimestamp(start_time + TOTAL_SECONDS) + timedelta(hours=5, minutes=30)
 
     return (
         f"📊 Live Dashboard\n\n"
@@ -128,38 +121,34 @@ def build_status(start_time):
         f"🔢 Epoch: {epoch}/288\n"
         f"📍 {part}\n\n"
         f"🧭 Phase Timings:\n"
-        f"• Part 1: {to_ist(p1)}\n"
-        f"• Part 2: {to_ist(p2)}\n"
-        f"• Part 3: {to_ist(p3)}\n\n"
+        f"• Part 1: {ist(p1)}\n"
+        f"• Part 2: {ist(p2)}\n"
+        f"• Part 3: {ist(p3)}\n\n"
         f"⏳ Left: {rh}h {rm}m\n"
-        f"🔁 Reset: {reset_dt.strftime('%d %b %I:%M %p')} IST"
+        f"🔁 Reset: {reset.strftime('%d %b %I:%M %p')} IST"
     ), epoch
-
 
 # ---------------- TIME PICKER ----------------
 
-def hour_keyboard():
+def hour_kb():
     return InlineKeyboardMarkup([
         [InlineKeyboardButton(str(i), callback_data=f"h_{i}") for i in range(j, j+3)]
         for j in range(1, 13, 3)
     ])
 
-
-def minute_keyboard():
+def min_kb():
     return InlineKeyboardMarkup([
         [InlineKeyboardButton(f"{i:02}", callback_data=f"m_{i}") for i in range(j, j+15, 5)]
         for j in range(0, 60, 15)
     ])
 
-
-def ampm_keyboard():
+def ampm_kb():
     return InlineKeyboardMarkup([
         [
             InlineKeyboardButton("AM", callback_data="ampm_AM"),
             InlineKeyboardButton("PM", callback_data="ampm_PM")
         ]
     ])
-
 
 # ---------------- MAIN ----------------
 
@@ -169,7 +158,7 @@ async def handle(update: Update):
 
     user = get_user(chat_id, user_id)
 
-    # ---------- CALLBACK ----------
+    # -------- CALLBACK --------
     if update.callback_query:
         q = update.callback_query
         await q.answer()
@@ -180,11 +169,11 @@ async def handle(update: Update):
 
         if data.startswith("h_"):
             TEMP[user_id]["h"] = int(data.split("_")[1])
-            await bot.send_message(chat_id, "Select Minute:", reply_markup=minute_keyboard())
+            await bot.send_message(chat_id, "Select Minute:", reply_markup=min_kb())
 
         elif data.startswith("m_"):
             TEMP[user_id]["m"] = int(data.split("_")[1])
-            await bot.send_message(chat_id, "Select AM/PM:", reply_markup=ampm_keyboard())
+            await bot.send_message(chat_id, "Select AM/PM:", reply_markup=ampm_kb())
 
         elif data.startswith("ampm_"):
             h = TEMP[user_id]["h"]
@@ -197,26 +186,21 @@ async def handle(update: Update):
                 h = 0
 
             now_utc = datetime.utcnow()
-            ist = now_utc + timedelta(hours=5, minutes=30)
-            ist = ist.replace(hour=h, minute=m, second=0)
+            ist_now = now_utc + timedelta(hours=5, minutes=30)
+            ist = ist_now.replace(hour=h, minute=m, second=0)
             utc = ist - timedelta(hours=5, minutes=30)
 
-            # FIXED SAVE (important)
             user["start_time"] = int(utc.timestamp())
             user["msg_id"] = None
             user["last_epoch"] = 0
 
             save_user(chat_id, user_id, user)
 
-            await bot.send_message(
-                chat_id,
-                f"✅ Epoch set to {ist.strftime('%I:%M %p')} IST",
-                reply_markup=get_menu()
-            )
+            await bot.send_message(chat_id, f"✅ Epoch set to {ist.strftime('%I:%M %p')} IST", reply_markup=get_menu())
 
         return
 
-    # ---------- TEXT ----------
+    # -------- TEXT --------
     if not update.message:
         return
 
@@ -235,7 +219,7 @@ async def handle(update: Update):
 
     # STATUS
     elif text == "📊 status":
-        if not user or "start_time" not in user:
+        if "start_time" not in user:
             await bot.send_message(chat_id, "❌ Start first", reply_markup=get_menu())
             return
 
@@ -246,17 +230,12 @@ async def handle(update: Update):
             user["msg_id"] = m.message_id
         else:
             try:
-                await bot.edit_message_text(
-                    chat_id=chat_id,
-                    message_id=user["msg_id"],
-                    text=msg,
-                    reply_markup=get_menu()
-                )
+                await bot.edit_message_text(chat_id=chat_id, message_id=user["msg_id"], text=msg, reply_markup=get_menu())
             except:
                 m = await bot.send_message(chat_id, msg, reply_markup=get_menu())
                 user["msg_id"] = m.message_id
 
-        # PART ALERTS
+        # Alerts
         if epoch != user.get("last_epoch", 0):
             if epoch == 97:
                 await bot.send_message(chat_id, "🚀 Part 2 Started")
@@ -270,7 +249,7 @@ async def handle(update: Update):
     # SET TIME
     elif text == "🕒 set time":
         TEMP[user_id] = {}
-        await bot.send_message(chat_id, "Select Hour:", reply_markup=hour_keyboard())
+        await bot.send_message(chat_id, "Select Hour:", reply_markup=hour_kb())
 
     # RESET
     elif text == "🔄 reset":
@@ -279,15 +258,10 @@ async def handle(update: Update):
 
     # HELP
     elif text == "ℹ️ help":
-        await bot.send_message(
-            chat_id,
-            "📘 Use:\n▶️ Start Epoch\n📊 Status\n🕒 Set Time\n🔄 Reset",
-            reply_markup=get_menu()
-        )
+        await bot.send_message(chat_id, "Use buttons below", reply_markup=get_menu())
 
     else:
         await bot.send_message(chat_id, "👇 Choose option", reply_markup=get_menu())
-
 
 # ---------------- VERCEL ENTRY ----------------
 
@@ -308,13 +282,5 @@ async def app(scope, receive, send):
         except Exception as e:
             print("ERROR:", e)
 
-        await send({
-            "type": "http.response.start",
-            "status": 200,
-            "headers": [(b"content-type", b"text/plain")]
-        })
-
-        await send({
-            "type": "http.response.body",
-            "body": b"ok"
-        })
+        await send({"type": "http.response.start", "status": 200, "headers": [(b"content-type", b"text/plain")]})
+        await send({"type": "http.response.body", "body": b"ok"})

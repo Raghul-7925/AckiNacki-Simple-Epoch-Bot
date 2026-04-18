@@ -1,16 +1,20 @@
 import time
 import os
 from datetime import datetime
-from telegram import Update
+from telegram import Update, Bot
 from telegram.ext import Application, MessageHandler, filters, ContextTypes
 
 BOT_TOKEN = os.environ.get("BOT_TOKEN")
+
+bot = Bot(token=BOT_TOKEN)
+
+# Telegram Application (used internally only)
+application = Application.builder().token(BOT_TOKEN).build()
 
 EPOCH_SECONDS = 330
 TOTAL_EPOCHS = 288
 TOTAL_SECONDS = TOTAL_EPOCHS * EPOCH_SECONDS
 
-# In-memory store (Vercel-safe)
 DATA = {}
 
 
@@ -33,7 +37,6 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if chat_id not in DATA:
         DATA[chat_id] = {}
 
-    # ---------- START ----------
     if text == "!start":
         DATA[chat_id][user_id] = {"start_time": now}
 
@@ -46,7 +49,6 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"🔁 Reset: {reset_dt.strftime('%d %b %I:%M %p')}"
         )
 
-    # ---------- STATUS ----------
     elif text == "!epoch me":
 
         if user_id not in DATA[chat_id]:
@@ -84,16 +86,37 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
 
 
-app = Application.builder().token(BOT_TOKEN).build()
-app.add_handler(MessageHandler(filters.TEXT, message_handler))
+application.add_handler(MessageHandler(filters.TEXT, message_handler))
 
 
-# Webhook entry
-async def handler(request):
-    try:
-        data = await request.json()
-        update = Update.de_json(data, app.bot)
-        await app.process_update(update)
-        return {"statusCode": 200, "body": "ok"}
-    except Exception as e:
-        return {"statusCode": 200, "body": str(e)}
+# 🔥 THIS IS THE FIX
+# Vercel expects THIS function name
+
+async def app(scope, receive, send):
+    if scope["type"] == "http":
+        body = b""
+        more_body = True
+
+        while more_body:
+            message = await receive()
+            body += message.get("body", b"")
+            more_body = message.get("more_body", False)
+
+        try:
+            import json
+            data = json.loads(body.decode())
+            update = Update.de_json(data, bot)
+            await application.process_update(update)
+        except:
+            pass
+
+        await send({
+            "type": "http.response.start",
+            "status": 200,
+            "headers": [(b"content-type", b"text/plain")]
+        })
+
+        await send({
+            "type": "http.response.body",
+            "body": b"ok"
+        })

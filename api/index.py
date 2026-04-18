@@ -1,7 +1,6 @@
 import json
 import time
 import os
-from datetime import datetime, timedelta
 from urllib.request import Request, urlopen
 from telegram import Bot, Update, ReplyKeyboardMarkup
 
@@ -11,20 +10,13 @@ KV_TOKEN = os.environ.get("KV_REST_API_TOKEN")
 
 bot = Bot(token=BOT_TOKEN)
 
-EPOCH_SECONDS = 330
-TOTAL_EPOCHS = 288
-TOTAL_SECONDS = TOTAL_EPOCHS * EPOCH_SECONDS
-
-# ---------------- KV ----------------
+# ---------------- KV (FINAL CORRECT) ----------------
 
 def kv_set(key, value):
     try:
         req = Request(
-            f"{KV_URL}/set",
-            data=json.dumps({
-                "key": key,
-                "value": json.dumps(value)
-            }).encode(),
+            f"{KV_URL}/set/{key}",
+            data=json.dumps(value).encode(),
             method="POST"
         )
         req.add_header("Authorization", f"Bearer {KV_TOKEN}")
@@ -41,12 +33,16 @@ def kv_get(key):
         res = urlopen(req).read()
 
         data = json.loads(res)
-        val = data.get("result")
 
-        if not val:
+        if "result" not in data:
             return {}
 
-        return json.loads(val)
+        val = data["result"]
+
+        if val is None:
+            return {}
+
+        return val
 
     except Exception as e:
         print("KV GET ERROR:", e)
@@ -60,66 +56,84 @@ def menu():
         resize_keyboard=True
     )
 
-# ---------------- STATUS ----------------
-
-def build(start):
-    now = int(time.time())
-    elapsed = now - start
-
-    epoch = min((elapsed // EPOCH_SECONDS) + 1, TOTAL_EPOCHS)
-
-    h = elapsed // 3600
-    m = (elapsed % 3600) // 60
-
-    return f"⏱️ {h}h {m}m\nEpoch {epoch}/288"
-
 # ---------------- MAIN ----------------
 
 async def handle(update: Update):
-    chat = str(update.effective_chat.id)
-    user = str(update.effective_user.id)
+    if not update.message:
+        return
 
-    key = f"{chat}:{user}"
-    data = kv_get(key)
+    chat_id = str(update.effective_chat.id)
+    user_id = str(update.effective_user.id)
+    key = f"{chat_id}:{user_id}"
 
     text = (update.message.text or "").lower()
 
-    # START
+    # ---------------- START ----------------
     if text in ["▶️ start epoch", "/start"]:
-        data = {"start_time": int(time.time())}
+        data = {
+            "start_time": int(time.time())
+        }
+
         kv_set(key, data)
 
-        await bot.send_message(chat, "✅ Saved", reply_markup=menu())
+        await bot.send_message(
+            chat_id,
+            "✅ Saved successfully",
+            reply_markup=menu()
+        )
 
-    # STATUS
+    # ---------------- STATUS ----------------
     elif text == "📊 status":
-        if "start_time" not in data:
-            await bot.send_message(chat, "❌ Start first", reply_markup=menu())
+        data = kv_get(key)
+
+        print("DEBUG DATA:", data)  # check logs
+
+        if not data or "start_time" not in data:
+            await bot.send_message(
+                chat_id,
+                "❌ Start first",
+                reply_markup=menu()
+            )
             return
 
-        msg = build(data["start_time"])
-        await bot.send_message(chat, msg, reply_markup=menu())
+        elapsed = int(time.time()) - data["start_time"]
 
-    # RESET
+        h = elapsed // 3600
+        m = (elapsed % 3600) // 60
+
+        await bot.send_message(
+            chat_id,
+            f"⏱️ {h}h {m}m\nData OK ✅",
+            reply_markup=menu()
+        )
+
+    # ---------------- RESET ----------------
     elif text == "🔄 reset":
         kv_set(key, {})
-        await bot.send_message(chat, "Reset done", reply_markup=menu())
+        await bot.send_message(
+            chat_id,
+            "🗑️ Reset done",
+            reply_markup=menu()
+        )
 
     else:
-        await bot.send_message(chat, "Use menu", reply_markup=menu())
+        await bot.send_message(
+            chat_id,
+            "👇 Use menu",
+            reply_markup=menu()
+        )
 
-
-# ---------------- ENTRY ----------------
+# ---------------- VERCEL ENTRY ----------------
 
 async def app(scope, receive, send):
     if scope["type"] == "http":
         body = b""
-        more = True
+        more_body = True
 
-        while more:
-            m = await receive()
-            body += m.get("body", b"")
-            more = m.get("more_body", False)
+        while more_body:
+            message = await receive()
+            body += message.get("body", b"")
+            more_body = message.get("more_body", False)
 
         try:
             data = json.loads(body.decode())
@@ -128,5 +142,13 @@ async def app(scope, receive, send):
         except Exception as e:
             print("ERROR:", e)
 
-        await send({"type": "http.response.start", "status": 200})
-        await send({"type": "http.response.body", "body": b"ok"})
+        await send({
+            "type": "http.response.start",
+            "status": 200,
+            "headers": [(b"content-type", b"text/plain")]
+        })
+
+        await send({
+            "type": "http.response.body",
+            "body": b"ok"
+        })

@@ -1,7 +1,7 @@
 import json
 import time
 import os
-from datetime import datetime
+from datetime import datetime, timedelta
 from telegram import (
     Bot,
     Update,
@@ -72,7 +72,7 @@ def ampm_keyboard():
         ]
     ])
 
-# ---------------- MAIN HANDLER ----------------
+# ---------------- MAIN ----------------
 
 async def handle(update: Update):
     chat_id = str(update.effective_chat.id)
@@ -82,7 +82,7 @@ async def handle(update: Update):
     if chat_id not in DATA:
         DATA[chat_id] = {}
 
-    # ---------------- CALLBACK BUTTONS ----------------
+    # ---------- CALLBACK (TIME SET FLOW) ----------
     if update.callback_query:
         query = update.callback_query
         await query.answer()
@@ -92,43 +92,51 @@ async def handle(update: Update):
         if user_id not in TEMP:
             TEMP[user_id] = {}
 
-        # Hour select
+        # Hour
         if data_cb.startswith("h_"):
             TEMP[user_id]["hour"] = int(data_cb.split("_")[1])
             await bot.send_message(chat_id, "Select Minute:", reply_markup=minute_keyboard())
 
-        # Minute select
+        # Minute
         elif data_cb.startswith("m_"):
             TEMP[user_id]["minute"] = int(data_cb.split("_")[1])
-            await bot.send_message(chat_id, "Select AM or PM:", reply_markup=ampm_keyboard())
+            await bot.send_message(chat_id, "Select AM/PM:", reply_markup=ampm_keyboard())
 
-        # AM/PM select
+        # AM/PM FINAL
         elif data_cb.startswith("ampm_"):
             ampm = data_cb.split("_")[1]
             h = TEMP[user_id]["hour"]
             m = TEMP[user_id]["minute"]
 
+            # convert 12h → 24h
             if ampm == "PM" and h != 12:
                 h += 12
             if ampm == "AM" and h == 12:
                 h = 0
 
-            now_dt = datetime.now()
-            custom = now_dt.replace(hour=h, minute=m, second=0)
+            # current UTC date
+            now_utc = datetime.utcnow()
 
-            timestamp = int(custom.timestamp())
+            # create IST datetime → convert to UTC
+            ist_time = now_utc + timedelta(hours=5, minutes=30)
+            ist_time = ist_time.replace(hour=h, minute=m, second=0)
+
+            # convert IST → UTC
+            utc_time = ist_time - timedelta(hours=5, minutes=30)
+
+            timestamp = int(utc_time.timestamp())
 
             DATA[chat_id][user_id] = {"start_time": timestamp}
 
             await bot.send_message(
                 chat_id,
-                f"✅ Epoch manually set\n🕒 {custom.strftime('%I:%M %p')}",
+                f"✅ Epoch manually set\n🕒 {ist_time.strftime('%I:%M %p')} IST",
                 reply_markup=get_menu()
             )
 
         return
 
-    # ---------------- TEXT HANDLING ----------------
+    # ---------- TEXT ----------
     if not update.message:
         return
 
@@ -138,12 +146,12 @@ async def handle(update: Update):
     if text in ["▶️ start epoch", "/start"]:
         DATA[chat_id][user_id] = {"start_time": now}
 
-        start_dt = datetime.fromtimestamp(now)
-        reset_dt = datetime.fromtimestamp(now + TOTAL_SECONDS)
+        start_dt = datetime.utcfromtimestamp(now) + timedelta(hours=5, minutes=30)
+        reset_dt = start_dt + timedelta(seconds=TOTAL_SECONDS)
 
         await bot.send_message(
             chat_id,
-            f"🟢 Epoch started\n\n🕒 Start: {start_dt.strftime('%d %b %I:%M %p')}\n🔁 Reset: {reset_dt.strftime('%d %b %I:%M %p')}",
+            f"🟢 Epoch started\n\n🕒 Start: {start_dt.strftime('%d %b %I:%M %p')} IST\n🔁 Reset: {reset_dt.strftime('%d %b %I:%M %p')} IST",
             reply_markup=get_menu()
         )
 
@@ -172,11 +180,11 @@ async def handle(update: Update):
         rh = remaining // 3600
         rm = (remaining % 3600) // 60
 
-        reset_dt = datetime.fromtimestamp(start_time + TOTAL_SECONDS)
+        reset_dt = datetime.utcfromtimestamp(start_time + TOTAL_SECONDS) + timedelta(hours=5, minutes=30)
 
         await bot.send_message(
             chat_id,
-            f"📊 Status\n\n⏱️ {h}h {m}m\n🔢 Epoch: {epoch}/288\n📍 {part}\n\n⏳ Left: {rh}h {rm}m\n🔁 Reset: {reset_dt.strftime('%d %b %I:%M %p')}",
+            f"📊 Status\n\n⏱️ {h}h {m}m\n🔢 Epoch: {epoch}/288\n📍 {part}\n\n⏳ Left: {rh}h {rm}m\n🔁 Reset: {reset_dt.strftime('%d %b %I:%M %p')} IST",
             reply_markup=get_menu()
         )
 
@@ -190,17 +198,13 @@ async def handle(update: Update):
         if user_id in DATA.get(chat_id, {}):
             del DATA[chat_id][user_id]
 
-        await bot.send_message(
-            chat_id,
-            "🗑️ Data deleted. Start again.",
-            reply_markup=get_menu()
-        )
+        await bot.send_message(chat_id, "🗑️ Data deleted", reply_markup=get_menu())
 
     # HELP
     elif text == "ℹ️ help":
         await bot.send_message(
             chat_id,
-            "📘 Use:\n▶️ Start Epoch\n📊 Status\n🕒 Set Time\n🔄 Reset",
+            "📘 Use:\n▶️ Start Epoch\n📊 Status\n🕒 Set Time\n🔄 Reset\n\nEach epoch = 5m30s\n288 epochs total",
             reply_markup=get_menu()
         )
 

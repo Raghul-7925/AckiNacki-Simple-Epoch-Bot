@@ -112,6 +112,14 @@ def build_status(start_time):
     rh = remaining // 3600
     rm = (remaining % 3600) // 60
 
+    # Part timings
+    p1 = start_time
+    p2 = start_time + (96 * EPOCH_SECONDS)
+    p3 = start_time + (192 * EPOCH_SECONDS)
+
+    def to_ist(ts):
+        return (datetime.utcfromtimestamp(ts) + timedelta(hours=5, minutes=30)).strftime('%I:%M %p')
+
     reset_dt = datetime.utcfromtimestamp(start_time + TOTAL_SECONDS) + timedelta(hours=5, minutes=30)
 
     return (
@@ -119,6 +127,10 @@ def build_status(start_time):
         f"⏱️ {h}h {m}m\n"
         f"🔢 Epoch: {epoch}/288\n"
         f"📍 {part}\n\n"
+        f"🧭 Phase Timings:\n"
+        f"• Part 1: {to_ist(p1)}\n"
+        f"• Part 2: {to_ist(p2)}\n"
+        f"• Part 3: {to_ist(p3)}\n\n"
         f"⏳ Left: {rh}h {rm}m\n"
         f"🔁 Reset: {reset_dt.strftime('%d %b %I:%M %p')} IST"
     ), epoch
@@ -189,18 +201,25 @@ async def handle(update: Update):
             ist = ist.replace(hour=h, minute=m, second=0)
             utc = ist - timedelta(hours=5, minutes=30)
 
-            user = {
-                "start_time": int(utc.timestamp()),
-                "msg_id": None,
-                "last_epoch": 0
-            }
+            # FIXED SAVE (important)
+            user["start_time"] = int(utc.timestamp())
+            user["msg_id"] = None
+            user["last_epoch"] = 0
+
             save_user(chat_id, user_id, user)
 
-            await bot.send_message(chat_id, f"✅ Set to {ist.strftime('%I:%M %p')} IST", reply_markup=get_menu())
+            await bot.send_message(
+                chat_id,
+                f"✅ Epoch set to {ist.strftime('%I:%M %p')} IST",
+                reply_markup=get_menu()
+            )
 
         return
 
     # ---------- TEXT ----------
+    if not update.message:
+        return
+
     text = (update.message.text or "").lower()
 
     # START
@@ -237,7 +256,7 @@ async def handle(update: Update):
                 m = await bot.send_message(chat_id, msg, reply_markup=get_menu())
                 user["msg_id"] = m.message_id
 
-        # ALERTS
+        # PART ALERTS
         if epoch != user.get("last_epoch", 0):
             if epoch == 97:
                 await bot.send_message(chat_id, "🚀 Part 2 Started")
@@ -260,7 +279,11 @@ async def handle(update: Update):
 
     # HELP
     elif text == "ℹ️ help":
-        await bot.send_message(chat_id, "Use buttons below", reply_markup=get_menu())
+        await bot.send_message(
+            chat_id,
+            "📘 Use:\n▶️ Start Epoch\n📊 Status\n🕒 Set Time\n🔄 Reset",
+            reply_markup=get_menu()
+        )
 
     else:
         await bot.send_message(chat_id, "👇 Choose option", reply_markup=get_menu())

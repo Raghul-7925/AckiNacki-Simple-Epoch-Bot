@@ -2,7 +2,7 @@ import json
 import time
 import os
 from datetime import datetime
-from telegram import Bot, Update
+from telegram import Bot, Update, ReplyKeyboardMarkup
 
 BOT_TOKEN = os.environ.get("BOT_TOKEN")
 bot = Bot(token=BOT_TOKEN)
@@ -13,6 +13,18 @@ TOTAL_SECONDS = TOTAL_EPOCHS * EPOCH_SECONDS
 
 DATA = {}
 
+# ---------------- MENU ----------------
+
+def get_menu():
+    return ReplyKeyboardMarkup(
+        [
+            ["▶️ Start Epoch", "📊 Status"],
+            ["🔄 Reset", "ℹ️ Help"]
+        ],
+        resize_keyboard=True
+    )
+
+# ---------------- PART LOGIC ----------------
 
 def get_part(epoch):
     if epoch <= 96:
@@ -22,8 +34,9 @@ def get_part(epoch):
     else:
         return "Part 3 (Low reward)"
 
+# ---------------- MAIN HANDLER ----------------
 
-async def handle_message(update: Update):
+async def handle(update: Update):
     if not update.message:
         return
 
@@ -36,8 +49,8 @@ async def handle_message(update: Update):
     if chat_id not in DATA:
         DATA[chat_id] = {}
 
-    # START
-    if text == "!start":
+    # ---------- START ----------
+    if text in ["▶️ start epoch", "/start"]:
         DATA[chat_id][user_id] = {"start_time": now}
 
         start_dt = datetime.fromtimestamp(now)
@@ -49,14 +62,18 @@ async def handle_message(update: Update):
                 f"🟢 Epoch started\n\n"
                 f"🕒 Start: {start_dt.strftime('%d %b %I:%M %p')}\n"
                 f"🔁 Reset: {reset_dt.strftime('%d %b %I:%M %p')}"
-            )
+            ),
+            reply_markup=get_menu()
         )
 
-    # STATUS
-    elif text == "!epoch me":
-
+    # ---------- STATUS ----------
+    elif text in ["📊 status"]:
         if user_id not in DATA[chat_id]:
-            await bot.send_message(chat_id=chat_id, text="❌ Use !start first")
+            await bot.send_message(
+                chat_id=chat_id,
+                text="❌ Start first using ▶️ Start Epoch",
+                reply_markup=get_menu()
+            )
             return
 
         start_time = DATA[chat_id][user_id]["start_time"]
@@ -89,11 +106,52 @@ async def handle_message(update: Update):
                 f"📍 {part}\n\n"
                 f"⏳ Remaining: {rh}h {rm}m\n"
                 f"🔁 Reset: {reset_dt.strftime('%d %b %I:%M %p')}"
-            )
+            ),
+            reply_markup=get_menu()
         )
 
+    # ---------- RESET ----------
+    elif text == "🔄 reset":
+        if user_id in DATA.get(chat_id, {}):
+            del DATA[chat_id][user_id]
 
-# 🔥 Vercel ASGI entrypoint
+        await bot.send_message(
+            chat_id=chat_id,
+            text="🗑️ Your data has been deleted.\n\nStart again using ▶️ Start Epoch.",
+            reply_markup=get_menu()
+        )
+
+    # ---------- HELP ----------
+    elif text == "ℹ️ help":
+        await bot.send_message(
+            chat_id=chat_id,
+            text=(
+                "📘 How to use this bot:\n\n"
+                "1️⃣ Click ▶️ Start Epoch after your first Popit tap of the day\n\n"
+                "2️⃣ Use 📊 Status to check:\n"
+                "• Current epoch\n"
+                "• Time passed\n"
+                "• Remaining time\n"
+                "• Reward part\n\n"
+                "3️⃣ 🔄 Reset will delete your data and restart tracking\n\n"
+                "⚠️ Important:\n"
+                "• Each epoch = 5 min 30 sec\n"
+                "• Total = 288 epochs (~26h 24m)\n"
+                "• First 96 epochs give highest rewards"
+            ),
+            reply_markup=get_menu()
+        )
+
+    # ---------- DEFAULT ----------
+    else:
+        await bot.send_message(
+            chat_id=chat_id,
+            text="👇 Choose an option",
+            reply_markup=get_menu()
+        )
+
+# ---------------- VERCEL ENTRY ----------------
+
 async def app(scope, receive, send):
     if scope["type"] == "http":
         body = b""
@@ -107,7 +165,7 @@ async def app(scope, receive, send):
         try:
             data = json.loads(body.decode())
             update = Update.de_json(data, bot)
-            await handle_message(update)
+            await handle(update)
         except Exception as e:
             print("ERROR:", e)
 

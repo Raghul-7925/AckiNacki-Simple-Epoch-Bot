@@ -1,15 +1,11 @@
+import json
 import time
 import os
 from datetime import datetime
-from telegram import Update, Bot
-from telegram.ext import Application, MessageHandler, filters, ContextTypes
+from telegram import Bot, Update
 
 BOT_TOKEN = os.environ.get("BOT_TOKEN")
-
 bot = Bot(token=BOT_TOKEN)
-
-# Telegram Application (used internally only)
-application = Application.builder().token(BOT_TOKEN).build()
 
 EPOCH_SECONDS = 330
 TOTAL_EPOCHS = 288
@@ -27,32 +23,40 @@ def get_part(epoch):
         return "Part 3 (Low reward)"
 
 
-async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def handle_message(update: Update):
+    if not update.message:
+        return
+
     text = (update.message.text or "").lower()
-    chat_id = str(update.effective_chat.id)
-    user_id = str(update.effective_user.id)
+    chat_id = str(update.message.chat.id)
+    user_id = str(update.message.from_user.id)
 
     now = int(time.time())
 
     if chat_id not in DATA:
         DATA[chat_id] = {}
 
+    # START
     if text == "!start":
         DATA[chat_id][user_id] = {"start_time": now}
 
         start_dt = datetime.fromtimestamp(now)
         reset_dt = datetime.fromtimestamp(now + TOTAL_SECONDS)
 
-        await update.message.reply_text(
-            f"🟢 Epoch started\n\n"
-            f"🕒 Start: {start_dt.strftime('%d %b %I:%M %p')}\n"
-            f"🔁 Reset: {reset_dt.strftime('%d %b %I:%M %p')}"
+        await bot.send_message(
+            chat_id=chat_id,
+            text=(
+                f"🟢 Epoch started\n\n"
+                f"🕒 Start: {start_dt.strftime('%d %b %I:%M %p')}\n"
+                f"🔁 Reset: {reset_dt.strftime('%d %b %I:%M %p')}"
+            )
         )
 
+    # STATUS
     elif text == "!epoch me":
 
         if user_id not in DATA[chat_id]:
-            await update.message.reply_text("❌ Use !start first")
+            await bot.send_message(chat_id=chat_id, text="❌ Use !start first")
             return
 
         start_time = DATA[chat_id][user_id]["start_time"]
@@ -76,22 +80,20 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         reset_dt = datetime.fromtimestamp(start_time + TOTAL_SECONDS)
 
-        await update.message.reply_text(
-            "📊 Your Epoch Status\n\n"
-            f"⏱️ Passed: {h}h {m}m\n"
-            f"🔢 Epoch: {epoch}/288\n\n"
-            f"📍 {part}\n\n"
-            f"⏳ Remaining: {rh}h {rm}m\n"
-            f"🔁 Reset: {reset_dt.strftime('%d %b %I:%M %p')}"
+        await bot.send_message(
+            chat_id=chat_id,
+            text=(
+                "📊 Your Epoch Status\n\n"
+                f"⏱️ Passed: {h}h {m}m\n"
+                f"🔢 Epoch: {epoch}/288\n\n"
+                f"📍 {part}\n\n"
+                f"⏳ Remaining: {rh}h {rm}m\n"
+                f"🔁 Reset: {reset_dt.strftime('%d %b %I:%M %p')}"
+            )
         )
 
 
-application.add_handler(MessageHandler(filters.TEXT, message_handler))
-
-
-# 🔥 THIS IS THE FIX
-# Vercel expects THIS function name
-
+# 🔥 Vercel ASGI entrypoint
 async def app(scope, receive, send):
     if scope["type"] == "http":
         body = b""
@@ -103,12 +105,11 @@ async def app(scope, receive, send):
             more_body = message.get("more_body", False)
 
         try:
-            import json
             data = json.loads(body.decode())
             update = Update.de_json(data, bot)
-            await application.process_update(update)
-        except:
-            pass
+            await handle_message(update)
+        except Exception as e:
+            print("ERROR:", e)
 
         await send({
             "type": "http.response.start",

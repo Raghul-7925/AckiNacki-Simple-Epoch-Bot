@@ -2,7 +2,13 @@ import json
 import time
 import os
 from datetime import datetime
-from telegram import Bot, Update, ReplyKeyboardMarkup
+from telegram import (
+    Bot,
+    Update,
+    ReplyKeyboardMarkup,
+    InlineKeyboardMarkup,
+    InlineKeyboardButton
+)
 
 BOT_TOKEN = os.environ.get("BOT_TOKEN")
 bot = Bot(token=BOT_TOKEN)
@@ -12,6 +18,7 @@ TOTAL_EPOCHS = 288
 TOTAL_SECONDS = TOTAL_EPOCHS * EPOCH_SECONDS
 
 DATA = {}
+TEMP = {}
 
 # ---------------- MENU ----------------
 
@@ -19,12 +26,13 @@ def get_menu():
     return ReplyKeyboardMarkup(
         [
             ["▶️ Start Epoch", "📊 Status"],
-            ["🔄 Reset", "ℹ️ Help"]
+            ["🕒 Set Time", "🔄 Reset"],
+            ["ℹ️ Help"]
         ],
         resize_keyboard=True
     )
 
-# ---------------- PART LOGIC ----------------
+# ---------------- PART ----------------
 
 def get_part(epoch):
     if epoch <= 96:
@@ -34,22 +42,99 @@ def get_part(epoch):
     else:
         return "Part 3 (Low reward)"
 
+# ---------------- KEYBOARDS ----------------
+
+def hour_keyboard():
+    rows = []
+    for i in range(1, 13, 3):
+        rows.append([
+            InlineKeyboardButton(str(i), callback_data=f"h_{i}"),
+            InlineKeyboardButton(str(i+1), callback_data=f"h_{i+1}"),
+            InlineKeyboardButton(str(i+2), callback_data=f"h_{i+2}")
+        ])
+    return InlineKeyboardMarkup(rows)
+
+def minute_keyboard():
+    rows = []
+    for i in range(0, 60, 15):
+        rows.append([
+            InlineKeyboardButton(f"{i:02}", callback_data=f"m_{i}"),
+            InlineKeyboardButton(f"{i+5:02}", callback_data=f"m_{i+5}"),
+            InlineKeyboardButton(f"{i+10:02}", callback_data=f"m_{i+10}")
+        ])
+    return InlineKeyboardMarkup(rows)
+
+def ampm_keyboard():
+    return InlineKeyboardMarkup([
+        [
+            InlineKeyboardButton("AM", callback_data="ampm_AM"),
+            InlineKeyboardButton("PM", callback_data="ampm_PM")
+        ]
+    ])
+
 # ---------------- MAIN HANDLER ----------------
 
 async def handle(update: Update):
-    if not update.message:
-        return
-
-    text = (update.message.text or "").lower()
-    chat_id = str(update.message.chat.id)
-    user_id = str(update.message.from_user.id)
-
+    chat_id = str(update.effective_chat.id)
+    user_id = str(update.effective_user.id)
     now = int(time.time())
 
     if chat_id not in DATA:
         DATA[chat_id] = {}
 
-    # ---------- START ----------
+    # ---------------- CALLBACK BUTTONS ----------------
+    if update.callback_query:
+        query = update.callback_query
+        await query.answer()
+
+        data_cb = query.data
+
+        if user_id not in TEMP:
+            TEMP[user_id] = {}
+
+        # Hour select
+        if data_cb.startswith("h_"):
+            TEMP[user_id]["hour"] = int(data_cb.split("_")[1])
+            await bot.send_message(chat_id, "Select Minute:", reply_markup=minute_keyboard())
+
+        # Minute select
+        elif data_cb.startswith("m_"):
+            TEMP[user_id]["minute"] = int(data_cb.split("_")[1])
+            await bot.send_message(chat_id, "Select AM or PM:", reply_markup=ampm_keyboard())
+
+        # AM/PM select
+        elif data_cb.startswith("ampm_"):
+            ampm = data_cb.split("_")[1]
+            h = TEMP[user_id]["hour"]
+            m = TEMP[user_id]["minute"]
+
+            if ampm == "PM" and h != 12:
+                h += 12
+            if ampm == "AM" and h == 12:
+                h = 0
+
+            now_dt = datetime.now()
+            custom = now_dt.replace(hour=h, minute=m, second=0)
+
+            timestamp = int(custom.timestamp())
+
+            DATA[chat_id][user_id] = {"start_time": timestamp}
+
+            await bot.send_message(
+                chat_id,
+                f"✅ Epoch manually set\n🕒 {custom.strftime('%I:%M %p')}",
+                reply_markup=get_menu()
+            )
+
+        return
+
+    # ---------------- TEXT HANDLING ----------------
+    if not update.message:
+        return
+
+    text = (update.message.text or "").lower()
+
+    # START
     if text in ["▶️ start epoch", "/start"]:
         DATA[chat_id][user_id] = {"start_time": now}
 
@@ -57,23 +142,15 @@ async def handle(update: Update):
         reset_dt = datetime.fromtimestamp(now + TOTAL_SECONDS)
 
         await bot.send_message(
-            chat_id=chat_id,
-            text=(
-                f"🟢 Epoch started\n\n"
-                f"🕒 Start: {start_dt.strftime('%d %b %I:%M %p')}\n"
-                f"🔁 Reset: {reset_dt.strftime('%d %b %I:%M %p')}"
-            ),
+            chat_id,
+            f"🟢 Epoch started\n\n🕒 Start: {start_dt.strftime('%d %b %I:%M %p')}\n🔁 Reset: {reset_dt.strftime('%d %b %I:%M %p')}",
             reply_markup=get_menu()
         )
 
-    # ---------- STATUS ----------
-    elif text in ["📊 status"]:
+    # STATUS
+    elif text == "📊 status":
         if user_id not in DATA[chat_id]:
-            await bot.send_message(
-                chat_id=chat_id,
-                text="❌ Start first using ▶️ Start Epoch",
-                reply_markup=get_menu()
-            )
+            await bot.send_message(chat_id, "❌ Start first", reply_markup=get_menu())
             return
 
         start_time = DATA[chat_id][user_id]["start_time"]
@@ -98,57 +175,38 @@ async def handle(update: Update):
         reset_dt = datetime.fromtimestamp(start_time + TOTAL_SECONDS)
 
         await bot.send_message(
-            chat_id=chat_id,
-            text=(
-                "📊 Your Epoch Status\n\n"
-                f"⏱️ Passed: {h}h {m}m\n"
-                f"🔢 Epoch: {epoch}/288\n\n"
-                f"📍 {part}\n\n"
-                f"⏳ Remaining: {rh}h {rm}m\n"
-                f"🔁 Reset: {reset_dt.strftime('%d %b %I:%M %p')}"
-            ),
+            chat_id,
+            f"📊 Status\n\n⏱️ {h}h {m}m\n🔢 Epoch: {epoch}/288\n📍 {part}\n\n⏳ Left: {rh}h {rm}m\n🔁 Reset: {reset_dt.strftime('%d %b %I:%M %p')}",
             reply_markup=get_menu()
         )
 
-    # ---------- RESET ----------
+    # SET TIME
+    elif text == "🕒 set time":
+        TEMP[user_id] = {}
+        await bot.send_message(chat_id, "Select Hour (IST):", reply_markup=hour_keyboard())
+
+    # RESET
     elif text == "🔄 reset":
         if user_id in DATA.get(chat_id, {}):
             del DATA[chat_id][user_id]
 
         await bot.send_message(
-            chat_id=chat_id,
-            text="🗑️ Your data has been deleted.\n\nStart again using ▶️ Start Epoch.",
+            chat_id,
+            "🗑️ Data deleted. Start again.",
             reply_markup=get_menu()
         )
 
-    # ---------- HELP ----------
+    # HELP
     elif text == "ℹ️ help":
         await bot.send_message(
-            chat_id=chat_id,
-            text=(
-                "📘 How to use this bot:\n\n"
-                "1️⃣ Click ▶️ Start Epoch after your first Popit tap of the day\n\n"
-                "2️⃣ Use 📊 Status to check:\n"
-                "• Current epoch\n"
-                "• Time passed\n"
-                "• Remaining time\n"
-                "• Reward part\n\n"
-                "3️⃣ 🔄 Reset will delete your data and restart tracking\n\n"
-                "⚠️ Important:\n"
-                "• Each epoch = 5 min 30 sec\n"
-                "• Total = 288 epochs (~26h 24m)\n"
-                "• First 96 epochs give highest rewards"
-            ),
+            chat_id,
+            "📘 Use:\n▶️ Start Epoch\n📊 Status\n🕒 Set Time\n🔄 Reset",
             reply_markup=get_menu()
         )
 
-    # ---------- DEFAULT ----------
     else:
-        await bot.send_message(
-            chat_id=chat_id,
-            text="👇 Choose an option",
-            reply_markup=get_menu()
-        )
+        await bot.send_message(chat_id, "👇 Choose option", reply_markup=get_menu())
+
 
 # ---------------- VERCEL ENTRY ----------------
 

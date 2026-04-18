@@ -3,8 +3,8 @@ import json
 import time
 import os
 from datetime import datetime, timedelta, timezone
-from urllib.error import HTTPError
 from urllib.request import Request, urlopen
+from urllib.error import HTTPError
 
 from telegram import Bot, Update, ReplyKeyboardMarkup, InlineKeyboardMarkup, InlineKeyboardButton
 
@@ -17,333 +17,295 @@ bot = Bot(token=BOT_TOKEN)
 
 IST = timezone(timedelta(hours=5, minutes=30))
 
-OWNER_ID = 1837260280
-
 EPOCH_SECONDS = 330
 TOTAL_EPOCHS = 288
 TOTAL_SECONDS = EPOCH_SECONDS * TOTAL_EPOCHS
 
-GITHUB_API_URL = f"https://api.github.com/repos/{GITHUB_REPO}/contents/{GITHUB_FILE}"
+GITHUB_API = f"https://api.github.com/repos/{GITHUB_REPO}/contents/{GITHUB_FILE}"
 
 
-def gh_headers():
+# ---------------- GITHUB ----------------
+
+def headers():
     return {
         "Authorization": f"Bearer {GITHUB_TOKEN}",
         "Accept": "application/vnd.github+json",
-        "X-GitHub-Api-Version": "2022-11-28",
-        "User-Agent": "acki-nacki-epoch-bot",
+        "User-Agent": "epoch-bot"
     }
 
 
-def github_load_store():
+def load_data():
     try:
-        req = Request(GITHUB_API_URL)
-        for k, v in gh_headers().items():
+        req = Request(GITHUB_API)
+        for k, v in headers().items():
             req.add_header(k, v)
 
-        with urlopen(req, timeout=20) as res:
-            body = json.loads(res.read().decode())
+        res = urlopen(req).read()
+        data = json.loads(res)
 
-        raw = base64.b64decode(body["content"]).decode()
-        store = json.loads(raw) if raw.strip() else {}
-
-        if not isinstance(store, dict):
-            store = {}
-
-        return store, body.get("sha")
+        content = base64.b64decode(data["content"]).decode()
+        return json.loads(content), data["sha"]
 
     except HTTPError as e:
         if e.code == 404:
             return {}, None
-        print("GITHUB LOAD ERROR:", e)
         return {}, None
-    except Exception as e:
-        print("GITHUB LOAD ERROR:", e)
+    except:
         return {}, None
 
 
-def github_save_store(store, sha):
-    payload = {
-        "message": "update epoch data",
-        "content": base64.b64encode(
-            json.dumps(store, indent=2).encode()
-        ).decode(),
-        "branch": "main",
+def save_data(store, sha):
+    body = {
+        "message": "update",
+        "content": base64.b64encode(json.dumps(store, indent=2).encode()).decode(),
+        "branch": "main"
     }
+
     if sha:
-        payload["sha"] = sha
+        body["sha"] = sha
 
-    def put(body):
-        req = Request(
-            GITHUB_API_URL,
-            data=json.dumps(body).encode(),
-            method="PUT",
-        )
-        for k, v in gh_headers().items():
-            req.add_header(k, v)
-        req.add_header("Content-Type", "application/json")
-        with urlopen(req, timeout=20) as res:
-            return json.loads(res.read().decode())
+    req = Request(GITHUB_API, data=json.dumps(body).encode(), method="PUT")
+    for k, v in headers().items():
+        req.add_header(k, v)
+    req.add_header("Content-Type", "application/json")
 
-    try:
-        return put(payload)
-    except HTTPError as e:
-        if e.code == 409:
-            latest_store, latest_sha = github_load_store()
-            if isinstance(latest_store, dict):
-                latest_store.update(store)
-                payload["content"] = base64.b64encode(
-                    json.dumps(latest_store, indent=2).encode()
-                ).decode()
-                payload["sha"] = latest_sha
-                return put(payload)
-        print("GITHUB SAVE ERROR:", e)
-        return None
-    except Exception as e:
-        print("GITHUB SAVE ERROR:", e)
-        return None
+    urlopen(req)
 
 
-def state_key(chat_id, user_id):
-    return f"{chat_id}:{user_id}"
+# ---------------- MENU ----------------
 
-
-def get_menu():
+def menu():
     return ReplyKeyboardMarkup(
         [
             ["▶️ Start Epoch", "📊 Status"],
             ["🕒 Set Time", "🔄 Reset"],
-            ["ℹ️ Help"],
+            ["ℹ️ Help"]
         ],
-        resize_keyboard=True,
+        resize_keyboard=True
     )
 
 
-def hour_keyboard():
-    rows = []
-    hours = list(range(1, 13))
-    for i in range(0, 12, 3):
-        rows.append(
-            [InlineKeyboardButton(str(h), callback_data=f"h_{h}") for h in hours[i:i + 3]]
-        )
-    return InlineKeyboardMarkup(rows)
+# ---------------- KEY ----------------
+
+def key(chat, user):
+    return f"{chat}:{user}"
 
 
-def minute_keyboard():
-    mins = list(range(0, 60, 5))
-    rows = []
-    for i in range(0, 12, 3):
-        rows.append(
-            [InlineKeyboardButton(f"{m:02}", callback_data=f"m_{m}") for m in mins[i:i + 3]]
-        )
-    return InlineKeyboardMarkup(rows)
+# ---------------- STATUS ----------------
 
-
-def ampm_keyboard():
-    return InlineKeyboardMarkup(
-        [[
-            InlineKeyboardButton("AM", callback_data="ampm_AM"),
-            InlineKeyboardButton("PM", callback_data="ampm_PM"),
-        ]]
-    )
-
-
-def get_part(epoch):
-    if epoch <= 96:
+def get_part(e):
+    if e <= 96:
         return "Part 1 (High reward)"
-    elif epoch <= 192:
+    elif e <= 192:
         return "Part 2 (Medium reward)"
     else:
         return "Part 3 (Low reward)"
 
 
-def epoch_info(start_time, now_ts=None):
-    if now_ts is None:
-        now_ts = int(time.time())
+def build(start):
+    now = int(time.time())
+    elapsed = now - start
 
-    elapsed = max(now_ts - start_time, 0)
     epoch = min((elapsed // EPOCH_SECONDS) + 1, TOTAL_EPOCHS)
-
-    remaining_seconds = max(TOTAL_SECONDS - elapsed, 0)
-    remaining_epochs = max(TOTAL_EPOCHS - epoch, 0)
 
     part = get_part(epoch)
 
-    p1 = datetime.fromtimestamp(start_time, IST)
-    p2 = datetime.fromtimestamp(start_time + (96 * EPOCH_SECONDS), IST)
-    p3 = datetime.fromtimestamp(start_time + (192 * EPOCH_SECONDS), IST)
-    reset_dt = datetime.fromtimestamp(start_time + TOTAL_SECONDS, IST)
+    h = elapsed // 3600
+    m = (elapsed % 3600) // 60
 
-    return {
-        "elapsed": elapsed,
-        "epoch": epoch,
-        "remaining_seconds": remaining_seconds,
-        "remaining_epochs": remaining_epochs,
-        "part": part,
-        "p1": p1,
-        "p2": p2,
-        "p3": p3,
-        "reset_dt": reset_dt,
-    }
+    rem = max(TOTAL_SECONDS - elapsed, 0)
+    rh = rem // 3600
+    rm = (rem % 3600) // 60
 
-
-def build_dashboard(start_time, prefix=""):
-    info = epoch_info(start_time)
-    h = info["elapsed"] // 3600
-    m = (info["elapsed"] % 3600) // 60
-
-    rh = info["remaining_seconds"] // 3600
-    rm = (info["remaining_seconds"] % 3600) // 60
+    p1 = datetime.fromtimestamp(start, IST)
+    p2 = datetime.fromtimestamp(start + 96 * EPOCH_SECONDS, IST)
+    p3 = datetime.fromtimestamp(start + 192 * EPOCH_SECONDS, IST)
+    reset = datetime.fromtimestamp(start + TOTAL_SECONDS, IST)
 
     text = (
-        f"{prefix}"
         f"📊 Live Dashboard\n\n"
         f"⏱️ {h}h {m}m\n"
-        f"🔢 Epoch: {info['epoch']}/288\n"
-        f"📍 {info['part']}\n\n"
+        f"🔢 Epoch: {epoch}/288\n"
+        f"📍 {part}\n\n"
         f"🧭 Phase Timings:\n"
-        f"• Part 1: {info['p1'].strftime('%d %b %I:%M %p')} IST\n"
-        f"• Part 2: {info['p2'].strftime('%d %b %I:%M %p')} IST\n"
-        f"• Part 3: {info['p3'].strftime('%d %b %I:%M %p')} IST\n\n"
+        f"• Part 1: {p1.strftime('%d %b %I:%M %p')} IST\n"
+        f"• Part 2: {p2.strftime('%d %b %I:%M %p')} IST\n"
+        f"• Part 3: {p3.strftime('%d %b %I:%M %p')} IST\n\n"
         f"⏳ Left: {rh}h {rm}m\n"
-        f"🔁 Reset: {info['reset_dt'].strftime('%d %b %I:%M %p')} IST"
+        f"🔁 Reset: {reset.strftime('%d %b %I:%M %p')} IST"
     )
-    return text, info
+
+    return text, epoch
 
 
-async def send_or_edit_dashboard(chat_id, state, prefix=""):
-    text, info = build_dashboard(state["start_time"], prefix=prefix)
+# ---------------- DASHBOARD ----------------
+
+async def dashboard(chat_id, state):
+    text, epoch = build(state["start_time"])
 
     if state.get("msg_id"):
         try:
-            await bot.edit_message_text(
-                chat_id=chat_id,
-                message_id=state["msg_id"],
-                text=text,
-            )
-        except Exception:
-            msg = await bot.send_message(chat_id, text, reply_markup=get_menu())
-            state["msg_id"] = msg.message_id
-    else:
-        msg = await bot.send_message(chat_id, text, reply_markup=get_menu())
-        state["msg_id"] = msg.message_id
+            await bot.edit_message_text(chat_id=chat_id, message_id=state["msg_id"], text=text)
+            return epoch
+        except:
+            pass
 
-    return info
+    msg = await bot.send_message(chat_id, text, reply_markup=menu())
+    state["msg_id"] = msg.message_id
 
+    try:
+        chat = await bot.get_chat(chat_id)
+        if chat.type != "private":
+            await bot.pin_chat_message(chat_id, msg.message_id, disable_notification=True)
+    except:
+        pass
+
+    return epoch
+
+
+# ---------------- TIME PICKER ----------------
+
+TEMP = {}
+
+def hours():
+    return InlineKeyboardMarkup([[InlineKeyboardButton(str(i), callback_data=f"h_{i}") for i in range(j, j+3)] for j in range(1, 13, 3)])
+
+def mins():
+    return InlineKeyboardMarkup([[InlineKeyboardButton(f"{i:02}", callback_data=f"m_{i}") for i in range(j, j+15, 5)] for j in range(0, 60, 15)])
+
+def ampm():
+    return InlineKeyboardMarkup([[InlineKeyboardButton("AM", callback_data="am"), InlineKeyboardButton("PM", callback_data="pm")]])
+
+
+# ---------------- MAIN ----------------
 
 async def handle(update: Update):
-    chat = update.effective_chat
-    user = update.effective_user
+    chat = str(update.effective_chat.id)
+    user = str(update.effective_user.id)
+    k = key(chat, user)
 
-    if not chat or not user:
-        return
+    store, sha = load_data()
+    state = store.get(k, {})
 
-    # DM: everyone can use. Group/supergroup: only you.
-    if chat.type != "private" and int(user.id) != OWNER_ID:
-        return
-
-    chat_id = str(chat.id)
-    user_id = str(user.id)
-    key = state_key(chat_id, user_id)
-
-    store, sha = github_load_store()
-    state = store.get(key, {})
-    if not isinstance(state, dict):
-        state = {}
-
-    # ----- CALLBACKS -----
+    # CALLBACK
     if update.callback_query:
         q = update.callback_query
         await q.answer()
 
+        if user not in TEMP:
+            TEMP[user] = {}
+
         data = q.data
-        pending = state.get("pending", {})
-        if not isinstance(pending, dict):
-            pending = {}
 
         if data.startswith("h_"):
-            if pending.get("step") != "hour":
-                await bot.send_message(chat_id, "❌ Use 🕒 Set Time again.", reply_markup=get_menu())
-                return
+            TEMP[user]["h"] = int(data.split("_")[1])
+            await bot.send_message(chat, "Select Minute:", reply_markup=mins())
 
-            pending["hour"] = int(data.split("_")[1])
-            pending["step"] = "minute"
-            state["pending"] = pending
-            store[key] = state
-            github_save_store(store, sha)
+        elif data.startswith("m_"):
+            TEMP[user]["m"] = int(data.split("_")[1])
+            await bot.send_message(chat, "Select AM/PM:", reply_markup=ampm())
 
-            await bot.send_message(chat_id, "Select Minute:", reply_markup=minute_keyboard())
-            return
+        elif data in ["am", "pm"]:
+            h = TEMP[user]["h"]
+            m = TEMP[user]["m"]
 
-        if data.startswith("m_"):
-            if pending.get("step") != "minute" or "hour" not in pending:
-                await bot.send_message(chat_id, "❌ Use 🕒 Set Time again.", reply_markup=get_menu())
-                return
+            if data == "pm" and h != 12:
+                h += 12
+            if data == "am" and h == 12:
+                h = 0
 
-            pending["minute"] = int(data.split("_")[1])
-            pending["step"] = "ampm"
-            state["pending"] = pending
-            store[key] = state
-            github_save_store(store, sha)
+            now = datetime.now(IST)
+            t = now.replace(hour=h, minute=m, second=0, microsecond=0)
 
-            await bot.send_message(chat_id, "Select AM/PM:", reply_markup=ampm_keyboard())
-            return
+            if t > now:
+                t -= timedelta(days=1)
 
-        if data.startswith("ampm_"):
-            if pending.get("step") != "ampm" or "hour" not in pending or "minute" not in pending:
-                await bot.send_message(chat_id, "❌ Use 🕒 Set Time again.", reply_markup=get_menu())
-                return
-
-            hour = int(pending["hour"])
-            minute = int(pending["minute"])
-            ampm = data.split("_")[1]
-
-            if ampm == "PM" and hour != 12:
-                hour += 12
-            if ampm == "AM" and hour == 12:
-                hour = 0
-
-            now_ist = datetime.now(IST)
-            custom_ist = now_ist.replace(hour=hour, minute=minute, second=0, microsecond=0)
-
-            # If the chosen time is ahead of now, assume the last occurrence
-            if custom_ist > now_ist:
-                custom_ist -= timedelta(days=1)
-
-            start_ts = int(custom_ist.timestamp())
-            info = epoch_info(start_ts)
-
-            state["start_time"] = start_ts
-            state["last_epoch"] = info["epoch"]
-            state["pending"] = {}
+            state["start_time"] = int(t.timestamp())
             state["msg_id"] = None
+            state["last_epoch"] = 0
 
-            store[key] = state
-            await send_or_edit_dashboard(
-                chat_id,
-                state,
-                prefix=f"✅ Epoch set to {custom_ist.strftime('%d %b %I:%M %p')} IST\n\n"
-            )
-            store[key] = state
-            github_save_store(store, sha)
-            return
+            store[k] = state
+            save_data(store, sha)
+
+            await bot.send_message(chat, f"✅ Set to {t.strftime('%I:%M %p')} IST", reply_markup=menu())
 
         return
 
-    # ----- TEXT -----
     if not update.message:
         return
 
-    text = (update.message.text or "").strip().lower()
+    text = (update.message.text or "").lower()
 
     # START
     if text in ["▶️ start epoch", "/start"]:
-        now_ts = int(time.time())
-        info = epoch_info(now_ts)
+        state = {
+            "start_time": int(time.time()),
+            "msg_id": None,
+            "last_epoch": 0
+        }
+        store[k] = state
+        save_data(store, sha)
 
-        state["start_time"] = now_ts
-        state["last_epoch"] = info["epoch"]
-        state["pending"] = {}
+        await bot.send_message(chat, "🟢 Started", reply_markup=menu())
+
+    # STATUS
+    elif text == "📊 status":
+        if "start_time" not in state:
+            await bot.send_message(chat, "❌ Start first", reply_markup=menu())
+            return
+
+        epoch = await dashboard(chat, state)
+
+        if epoch != state.get("last_epoch", 0):
+            if epoch == 97:
+                await bot.send_message(chat, "🚀 Part 2 Started")
+            elif epoch == 193:
+                await bot.send_message(chat, "⚠️ Part 3 Started")
+
+        state["last_epoch"] = epoch
+        store[k] = state
+        save_data(store, sha)
+
+    # SET TIME
+    elif text == "🕒 set time":
+        await bot.send_message(chat, "Select Hour:", reply_markup=hours())
+
+    # RESET
+    elif text == "🔄 reset":
+        if k in store:
+            del store[k]
+            save_data(store, sha)
+        await bot.send_message(chat, "🗑️ Cleared", reply_markup=menu())
+
+    # HELP
+    elif text == "ℹ️ help":
+        await bot.send_message(chat, "Use buttons", reply_markup=menu())
+
+    else:
+        await bot.send_message(chat, "👇 Choose", reply_markup=menu())
+
+
+# ---------------- ENTRY ----------------
+
+async def app(scope, receive, send):
+    if scope["type"] == "http":
+        body = b""
+        more = True
+
+        while more:
+            m = await receive()
+            body += m.get("body", b"")
+            more = m.get("more_body", False)
+
+        try:
+            data = json.loads(body.decode())
+            update = Update.de_json(data, bot)
+            await handle(update)
+        except Exception as e:
+            print("ERROR:", e)
+
+        await send({"type": "http.response.start", "status": 200})
+        await send({"type": "http.response.body", "body": b"ok"})tate["pending"] = {}
         state["msg_id"] = None
 
         store[key] = state

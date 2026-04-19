@@ -78,6 +78,50 @@ def menu():
         resize_keyboard=True
     )
 
+def hour_keyboard():
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("1", callback_data="h_1"),
+         InlineKeyboardButton("2", callback_data="h_2"),
+         InlineKeyboardButton("3", callback_data="h_3")],
+
+        [InlineKeyboardButton("4", callback_data="h_4"),
+         InlineKeyboardButton("5", callback_data="h_5"),
+         InlineKeyboardButton("6", callback_data="h_6")],
+
+        [InlineKeyboardButton("7", callback_data="h_7"),
+         InlineKeyboardButton("8", callback_data="h_8"),
+         InlineKeyboardButton("9", callback_data="h_9")],
+
+        [InlineKeyboardButton("10", callback_data="h_10"),
+         InlineKeyboardButton("11", callback_data="h_11"),
+         InlineKeyboardButton("12", callback_data="h_12")],
+    ])
+
+def minute_keyboard():
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("00", callback_data="m_0"),
+         InlineKeyboardButton("05", callback_data="m_5"),
+         InlineKeyboardButton("10", callback_data="m_10")],
+
+        [InlineKeyboardButton("15", callback_data="m_15"),
+         InlineKeyboardButton("20", callback_data="m_20"),
+         InlineKeyboardButton("25", callback_data="m_25")],
+
+        [InlineKeyboardButton("30", callback_data="m_30"),
+         InlineKeyboardButton("35", callback_data="m_35"),
+         InlineKeyboardButton("40", callback_data="m_40")],
+
+        [InlineKeyboardButton("45", callback_data="m_45"),
+         InlineKeyboardButton("50", callback_data="m_50"),
+         InlineKeyboardButton("55", callback_data="m_55")],
+    ])
+
+def ampm_keyboard():
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("AM", callback_data="am"),
+         InlineKeyboardButton("PM", callback_data="pm")]
+    ])
+
 
 # ---------------- CALC ----------------
 def get_part(e):
@@ -187,7 +231,7 @@ async def handle(update: Update):
     store, sha = load_data()
     state = store.get(key, {})
 
-    # ---------- CALLBACK ----------
+    # CALLBACK FLOW
     if update.callback_query:
         q = update.callback_query
         await q.answer()
@@ -197,37 +241,18 @@ async def handle(update: Update):
 
         d = q.data
 
-        # Hour
         if d.startswith("h_"):
             TEMP[user]["h"] = int(d.split("_")[1])
-
-            await bot.send_message(
-                int(chat),
-                "Select Minute:",
-                reply_markup=InlineKeyboardMarkup([
-                    [InlineKeyboardButton(f"{i:02}", callback_data=f"m_{i}") for i in range(0,60,10)]
-                ])
-            )
+            await bot.send_message(int(chat), "Select Minute:", reply_markup=minute_keyboard())
             return
 
-        # Minute
         if d.startswith("m_"):
             if "h" not in TEMP[user]:
                 return
-
             TEMP[user]["m"] = int(d.split("_")[1])
-
-            await bot.send_message(
-                int(chat),
-                "Select AM/PM:",
-                reply_markup=InlineKeyboardMarkup([
-                    [InlineKeyboardButton("AM", callback_data="am"),
-                     InlineKeyboardButton("PM", callback_data="pm")]
-                ])
-            )
+            await bot.send_message(int(chat), "Select AM/PM:", reply_markup=ampm_keyboard())
             return
 
-        # AM/PM
         if d in ["am", "pm"]:
             if "h" not in TEMP[user] or "m" not in TEMP[user]:
                 return
@@ -259,17 +284,16 @@ async def handle(update: Update):
 
         return
 
-    # ---------- TEXT ----------
     if not update.message:
         return
 
-    # 🔥 FIX: stop spam
+    # prevent spam during inline flow
     if user in TEMP and TEMP[user]:
         return
 
     text = (update.message.text or "").lower().strip()
 
-    if text in ["▶️ start epoch","/start"]:
+    if text in ["▶️ start epoch", "/start"]:
         state = {"start_time": int(time.time()), "msg_id": None}
         store[key] = state
         save_data(store, sha)
@@ -279,25 +303,16 @@ async def handle(update: Update):
         if "start_time" not in state:
             await bot.send_message(int(chat), "❌ Start first", reply_markup=menu())
             return
-
         await dashboard(chat, state)
 
     elif text == "🕒 set time":
         TEMP[user] = {}
-
-        await bot.send_message(
-            int(chat),
-            "Select Hour:",
-            reply_markup=InlineKeyboardMarkup([
-                [InlineKeyboardButton(str(i), callback_data=f"h_{i}") for i in range(1,13)]
-            ])
-        )
+        await bot.send_message(int(chat), "Select Hour (IST):", reply_markup=hour_keyboard())
 
     elif text == "🔄 reset":
         if key in store:
             del store[key]
             save_data(store, sha)
-
         await bot.send_message(int(chat), "🗑️ Reset done", reply_markup=menu())
 
     else:
@@ -307,19 +322,19 @@ async def handle(update: Update):
 # ---------------- ENTRY ----------------
 async def app(scope, receive, send):
     if scope["type"] == "http":
-        body=b""
-        more=True
+        body = b""
+        more = True
         while more:
-            m=await receive()
-            body+=m.get("body",b"")
-            more=m.get("more_body",False)
+            m = await receive()
+            body += m.get("body", b"")
+            more = m.get("more_body", False)
 
         try:
-            data=json.loads(body.decode())
-            update=Update.de_json(data,bot)
+            data = json.loads(body.decode())
+            update = Update.de_json(data, bot)
             await handle(update)
         except Exception as e:
             print(e)
 
-        await send({"type":"http.response.start","status":200})
-        await send({"type":"http.response.body","body":b"ok"})
+        await send({"type": "http.response.start", "status": 200})
+        await send({"type": "http.response.body", "body": b"ok"})

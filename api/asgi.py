@@ -4,7 +4,6 @@ import time
 import os
 from datetime import datetime, timedelta, timezone
 from urllib.request import Request, urlopen
-from urllib.error import HTTPError
 
 from telegram import (
     Bot,
@@ -29,7 +28,7 @@ TOTAL_SECONDS = EPOCH_SECONDS * TOTAL_EPOCHS
 
 DAILY_TAP_LIMIT = 12000
 TAPS_PER_EPOCH = 70
-DAILY_USABLE_EPOCHS = DAILY_TAP_LIMIT // TAPS_PER_EPOCH  # 172
+DAILY_USABLE_EPOCHS = DAILY_TAP_LIMIT // TAPS_PER_EPOCH
 
 
 # ---------------- GITHUB ----------------
@@ -46,10 +45,8 @@ def load_data():
         req = Request(GITHUB_API)
         for k, v in gh_headers().items():
             req.add_header(k, v)
-
         res = urlopen(req).read()
         data = json.loads(res)
-
         content = base64.b64decode(data["content"]).decode()
         return json.loads(content), data["sha"]
     except:
@@ -148,10 +145,10 @@ def build(start):
         f"• Done: {s['taps_done']:,}\n"
         f"• Left: {s['taps_left']:,}\n\n"
 
-        f"🧭 Phases\n"
-        f"P1: {s['p1'].strftime('%I:%M %p')}\n"
-        f"P2: {s['p2'].strftime('%I:%M %p')}\n"
-        f"P3: {s['p3'].strftime('%I:%M %p')}\n\n"
+        f"🧭 Phase Timings:\n"
+        f"• Part 1: {s['p1'].strftime('%d %b %I:%M %p')} IST\n"
+        f"• Part 2: {s['p2'].strftime('%d %b %I:%M %p')} IST\n"
+        f"• Part 3: {s['p3'].strftime('%d %b %I:%M %p')} IST\n\n"
 
         f"⏳ Left: {s['rh']}h {s['rm']}m\n"
         f"🔁 Reset: {s['reset'].strftime('%d %b %I:%M %p')} IST"
@@ -172,18 +169,11 @@ async def dashboard(chat, state):
                 reply_markup=menu()
             )
             return
-        except Exception as e:
-            print(f"Edit error: {e}")
+        except:
+            pass
 
     msg = await bot.send_message(int(chat), text, reply_markup=menu())
     state["msg_id"] = msg.message_id
-
-    try:
-        c = await bot.get_chat(int(chat))
-        if c.type != "private":
-            await bot.pin_chat_message(int(chat), msg.message_id, disable_notification=True)
-    except:
-        pass
 
 
 # ---------------- HANDLER ----------------
@@ -197,7 +187,7 @@ async def handle(update: Update):
     store, sha = load_data()
     state = store.get(key, {})
 
-    # CALLBACK (manual time)
+    # ---------- CALLBACK ----------
     if update.callback_query:
         q = update.callback_query
         await q.answer()
@@ -207,19 +197,41 @@ async def handle(update: Update):
 
         d = q.data
 
+        # Hour
         if d.startswith("h_"):
             TEMP[user]["h"] = int(d.split("_")[1])
-            await bot.send_message(int(chat), "Select Minute:", reply_markup=InlineKeyboardMarkup([
-                [InlineKeyboardButton(f"{i:02}", callback_data=f"m_{i}") for i in range(0,60,10)]
-            ]))
 
-        elif d.startswith("m_"):
+            await bot.send_message(
+                int(chat),
+                "Select Minute:",
+                reply_markup=InlineKeyboardMarkup([
+                    [InlineKeyboardButton(f"{i:02}", callback_data=f"m_{i}") for i in range(0,60,10)]
+                ])
+            )
+            return
+
+        # Minute
+        if d.startswith("m_"):
+            if "h" not in TEMP[user]:
+                return
+
             TEMP[user]["m"] = int(d.split("_")[1])
-            await bot.send_message(int(chat), "AM or PM?", reply_markup=InlineKeyboardMarkup([
-                [InlineKeyboardButton("AM", callback_data="am"), InlineKeyboardButton("PM", callback_data="pm")]
-            ]))
 
-        elif d in ["am","pm"]:
+            await bot.send_message(
+                int(chat),
+                "Select AM/PM:",
+                reply_markup=InlineKeyboardMarkup([
+                    [InlineKeyboardButton("AM", callback_data="am"),
+                     InlineKeyboardButton("PM", callback_data="pm")]
+                ])
+            )
+            return
+
+        # AM/PM
+        if d in ["am", "pm"]:
+            if "h" not in TEMP[user] or "m" not in TEMP[user]:
+                return
+
             h = TEMP[user]["h"]
             m = TEMP[user]["m"]
 
@@ -240,22 +252,28 @@ async def handle(update: Update):
             store[key] = state
             save_data(store, sha)
 
+            TEMP[user] = {}
+
             await bot.send_message(int(chat), f"✅ Set {t.strftime('%I:%M %p')} IST")
+            return
 
         return
 
+    # ---------- TEXT ----------
     if not update.message:
         return
 
-    text = (update.message.text or "").lower()
+    # 🔥 FIX: stop spam
+    if user in TEMP and TEMP[user]:
+        return
+
+    text = (update.message.text or "").lower().strip()
 
     if text in ["▶️ start epoch","/start"]:
         state = {"start_time": int(time.time()), "msg_id": None}
         store[key] = state
         save_data(store, sha)
         await dashboard(chat, state)
-        store[key] = state
-        save_data(store, sha)
 
     elif text == "📊 status":
         if "start_time" not in state:
@@ -263,25 +281,30 @@ async def handle(update: Update):
             return
 
         await dashboard(chat, state)
-        store[key] = state
-        save_data(store, sha)
 
     elif text == "🕒 set time":
-        await bot.send_message(int(chat), "Select Hour:", reply_markup=InlineKeyboardMarkup([
-            [InlineKeyboardButton(str(i), callback_data=f"h_{i}") for i in range(1,13)]
-        ]))
+        TEMP[user] = {}
+
+        await bot.send_message(
+            int(chat),
+            "Select Hour:",
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton(str(i), callback_data=f"h_{i}") for i in range(1,13)]
+            ])
+        )
 
     elif text == "🔄 reset":
         if key in store:
             del store[key]
             save_data(store, sha)
+
         await bot.send_message(int(chat), "🗑️ Reset done", reply_markup=menu())
 
     else:
         await bot.send_message(int(chat), "👇 Use menu", reply_markup=menu())
 
 
-# ---------------- ASGI ENTRY ----------------
+# ---------------- ENTRY ----------------
 async def app(scope, receive, send):
     if scope["type"] == "http":
         body=b""

@@ -167,33 +167,22 @@ def add_day_record(state, start_ts):
 # ---------------- DASHBOARD ----------------
 def build(start):
     s = stats(start)
-    
-    high_used = min(s['usable'], 96)
-    low_used = max(s['usable'] - 96, 0)
-    high_left = max(96 - high_used, 0)
-    low_left = max(76 - low_used, 0)
 
     text = (
-        f"📊 Live Dashboard (Day {s['day']})\n\n"
+        f"📊 Live Dashboard\n\n"
         f"⏱️ {s['h']}h {s['m']}m\n"
         f"🔢 Epoch: {s['epoch']}/288\n"
         f"📍 {s['part']}\n\n"
 
-        f"🪙 Daily Reward Plan\n"
-        f"• Tap limit: 12,000 taps/day\n"
-        f"• Usable epochs today: {s['usable']}/172\n"
-        f"• 80% reward zone: 1–96 epochs\n"
-        f"• 20% reward zone: 97–172 epochs\n"
-        f"• 80% zone used: {high_used}/96\n"
-        f"• 20% zone used: {low_used}/76\n"
-        f"• 80% zone left: {high_left}/96\n"
-        f"• 20% zone left: {low_left}/76\n\n"
+        f"🪙 Daily\n"
+        f"• Epochs: {s['usable']}/172\n"
+        f"• Taps: {s['taps_done']:,}/12,000\n\n"
 
-        f"📊 Taps Summary\n"
-        f"• Taps done: {s['taps_done']:,}\n"
-        f"• Taps left: {s['taps_left']:,}\n\n"
+        f"📊 Taps\n"
+        f"• Done: {s['taps_done']:,}\n"
+        f"• Left: {s['taps_left']:,}\n\n"
 
-        f"🧭 Phase Timings (Day {s['day']})\n"
+        f"🧭 Phase Timings:\n"
         f"• Part 1: {s['p1'].strftime('%d %b %I:%M %p')} IST\n"
         f"• Part 2: {s['p2'].strftime('%d %b %I:%M %p')} IST\n"
         f"• Part 3: {s['p3'].strftime('%d %b %I:%M %p')} IST\n\n"
@@ -240,13 +229,22 @@ def build_analysis(state):
     
     days = state["days"]
     
+    # Use monospace code formatting for proper alignment
     text = "📈 Analysis - Daily Cycle History\n\n"
+    text += "<code>"
     text += "Day | Start Date       | Start Time    | Reset Date       | Reset Time\n"
-    text += "─" * 80 + "\n"
+    text += "────────────────────────────────────────────────────────────────────────────\n"
     
     for d in days:
-        text += f"{d['day_num']:3} | {d['start_date']:16} | {d['start_time']:13} | {d['reset_date']:16} | {d['reset_time']}\n"
+        day_num = str(d['day_num']).rjust(3)
+        start_date = d['start_date'].ljust(16)
+        start_time = d['start_time'].ljust(14)
+        reset_date = d['reset_date'].ljust(16)
+        reset_time = d['reset_time']
+        
+        text += f"{day_num} | {start_date} | {start_time} | {reset_date} | {reset_time}\n"
     
+    text += "</code>"
     return text
 
 
@@ -358,7 +356,7 @@ async def handle(update: Update):
             return
         
         analysis = build_analysis(state)
-        await bot.send_message(int(chat), f"<code>{analysis}</code>", parse_mode="HTML", reply_markup=menu())
+        await bot.send_message(int(chat), analysis, parse_mode="HTML", reply_markup=menu())
         return
 
     elif text == "🔄 reset":

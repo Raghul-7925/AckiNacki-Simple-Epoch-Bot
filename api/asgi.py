@@ -13,7 +13,7 @@ BOT_TOKEN = os.environ.get("BOT_TOKEN")
 GITHUB_TOKEN = os.environ.get("GITHUB_TOKEN")
 GITHUB_REPO = os.environ.get("GITHUB_REPO")
 GITHUB_FILE = os.environ.get("GITHUB_FILE", "data.json")
-OWNER_ID = os.environ.get("1837260280")  # set this to your Telegram numeric user id
+OWNER_IDS = os.environ.get("1837260280", "")  # comma-separated Telegram user IDs
 
 bot = Bot(token=BOT_TOKEN)
 
@@ -25,12 +25,14 @@ DAILY_RESET_SECONDS = (24 * 3600) + (55 * 60)  # 24h 55m = 89700 seconds
 
 
 # ---------------- ACCESS ----------------
+OWNER_LIST = [i.strip() for i in OWNER_IDS.split(",") if i.strip()]
+
 def is_owner(update: Update):
-    if not OWNER_ID:
+    if not OWNER_LIST:
         return True
     if not update.effective_user:
         return False
-    return str(update.effective_user.id) == str(OWNER_ID)
+    return str(update.effective_user.id) in OWNER_LIST
 
 
 # ---------------- GITHUB ----------------
@@ -188,14 +190,12 @@ async def dashboard(chat, state):
 
     if state.get("msg_id"):
         try:
-            await bot.edit_message_text(
+            await bot.delete_message(
                 chat_id=int(chat),
-                message_id=int(state["msg_id"]),
-                text=text
+                message_id=int(state["msg_id"])
             )
-            return
         except Exception as e:
-            print(f"Edit error: {e}")
+            print(f"Delete error: {e}")
 
     msg = await bot.send_message(int(chat), text)
     state["msg_id"] = msg.message_id
@@ -203,9 +203,13 @@ async def dashboard(chat, state):
     try:
         c = await bot.get_chat(int(chat))
         if c.type != "private":
-            await bot.pin_chat_message(int(chat), msg.message_id, disable_notification=True)
-    except:
-        pass
+            await bot.pin_chat_message(
+                int(chat),
+                msg.message_id,
+                disable_notification=True
+            )
+    except Exception as e:
+        print(f"Pin error: {e}")
 
 
 def build_analysis(state):

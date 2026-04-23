@@ -25,7 +25,7 @@ IST = timezone(timedelta(hours=5, minutes=30))
 
 EPOCH_SECONDS = 330
 TOTAL_EPOCHS = 288
-DAILY_RESET_SECONDS = (24 * 3600) + (55 * 60)
+DAILY_RESET_SECONDS = (24 * 3600) + (55 * 60)  # 24h 55m = 89700 seconds
 
 
 # ---------------- GITHUB ----------------
@@ -72,7 +72,8 @@ def menu():
     return ReplyKeyboardMarkup(
         [
             ["▶️ Start Epoch", "📊 Status"],
-            ["🕒 Set Time", "🔄 Reset"]
+            ["🕒 Set Time", "🔄 Reset"],
+            ["📈 Analysis"]
         ],
         resize_keyboard=True
     )
@@ -140,8 +141,8 @@ def stats(start):
     elapsed_in_day = elapsed % DAILY_RESET_SECONDS
 
     epoch = min((elapsed_in_day // EPOCH_SECONDS) + 1, TOTAL_EPOCHS)
-    
-    daily_usable = 12000 // 70
+
+    daily_usable = 12000 // 70  # 172
     taps_done = min(epoch, daily_usable) * 70
     taps_left = max(12000 - taps_done, 0)
 
@@ -179,17 +180,17 @@ def stats(start):
 def add_day_record(state, start_ts):
     if "days" not in state:
         state["days"] = []
-    
+
     now = int(time.time())
     elapsed = now - start_ts
     days_passed = elapsed // DAILY_RESET_SECONDS
-    
+
     day_start_ts = start_ts + (days_passed * DAILY_RESET_SECONDS)
     reset_ts = day_start_ts + DAILY_RESET_SECONDS
-    
+
     day_start_dt = datetime.fromtimestamp(day_start_ts, IST)
     reset_dt = datetime.fromtimestamp(reset_ts, IST)
-    
+
     record = {
         "day_num": days_passed + 1,
         "start_date": day_start_dt.strftime("%d %b %Y"),
@@ -197,7 +198,7 @@ def add_day_record(state, start_ts):
         "reset_date": reset_dt.strftime("%d %b %Y"),
         "reset_time": reset_dt.strftime("%I:%M %p")
     }
-    
+
     if not any(d["day_num"] == record["day_num"] for d in state["days"]):
         state["days"].append(record)
 
@@ -206,24 +207,35 @@ def add_day_record(state, start_ts):
 def build(start):
     s = stats(start)
 
-    return (
+    text = (
         f"📊 Live Dashboard\n\n"
         f"⏱️ {s['h']}h {s['m']}m\n"
         f"🔢 Epoch: {s['epoch']}/288\n"
         f"📍 {s['part']}\n\n"
+
         f"🪙 Daily\n"
         f"• Epochs: {s['usable']}/172\n"
         f"• Taps: {s['taps_done']:,}/12,000\n\n"
+
         f"📊 Taps\n"
         f"• Done: {s['taps_done']:,}\n"
         f"• Left: {s['taps_left']:,}\n\n"
+
+        f"🧭 Phase Timings:\n"
+        f"• Part 1: {s['p1'].strftime('%d %b %I:%M %p')} IST\n"
+        f"• Part 2: {s['p2'].strftime('%d %b %I:%M %p')} IST\n"
+        f"• Part 3: {s['p3'].strftime('%d %b %I:%M %p')} IST\n\n"
+
         f"⏳ Left: {s['rh']}h {s['rm']}m\n"
         f"🔁 Reset: {s['reset'].strftime('%d %b %I:%M %p')} IST"
     )
 
+    return text
+
 
 async def dashboard(chat, state):
     text = build(state["start_time"])
+
     add_day_record(state, state["start_time"])
 
     if state.get("msg_id"):
@@ -235,11 +247,36 @@ async def dashboard(chat, state):
                 reply_markup=menu()
             )
             return
-        except:
-            pass
+        except Exception as e:
+            print(f"Edit error: {e}")
 
     msg = await bot.send_message(int(chat), text, reply_markup=menu())
     state["msg_id"] = msg.message_id
+
+    try:
+        c = await bot.get_chat(int(chat))
+        if c.type != "private":
+            await bot.pin_chat_message(int(chat), msg.message_id, disable_notification=True)
+    except:
+        pass
+
+
+def build_analysis(state):
+    if "days" not in state or not state["days"]:
+        return "📈 No data yet. Start an epoch first!"
+
+    days = state["days"]
+    emojis = ["1️⃣", "2️⃣", "3️⃣", "4️⃣", "5️⃣", "6️⃣", "7️⃣", "8️⃣", "9️⃣", "🔟"]
+
+    text = "📈 Analysis - Daily Cycle History\n\n"
+
+    for d in days:
+        emoji = emojis[min(d["day_num"] - 1, 9)]
+        text += f"Day {emoji}\n"
+        text += f"Start: {d['start_date']} | {d['start_time']}\n"
+        text += f"Reset: {d['reset_date']} | {d['reset_time']}\n\n"
+
+    return text
 
 
 # ---------------- HANDLER ----------------
@@ -268,11 +305,19 @@ async def handle(update: Update):
             return
 
         elif d.startswith("m_"):
+            if "h" not in TEMP.get(user, {}):
+                await q.edit_message_text("❌ Use 🕒 Set Time again")
+                return
+
             TEMP[user]["m"] = int(d.split("_")[1])
             await bot.send_message(int(chat), "AM or PM?", reply_markup=ampm_keyboard())
             return
 
-        elif d in ["am","pm"]:
+        elif d in ["am", "pm"]:
+            if "h" not in TEMP.get(user, {}) or "m" not in TEMP.get(user, {}):
+                await q.edit_message_text("❌ Use 🕒 Set Time again")
+                return
+
             h = TEMP[user]["h"]
             m = TEMP[user]["m"]
 
@@ -282,7 +327,7 @@ async def handle(update: Update):
                 h = 0
 
             now = datetime.now(IST)
-            t = now.replace(hour=h, minute=m, second=0)
+            t = now.replace(hour=h, minute=m, second=0, microsecond=0)
 
             if t > now:
                 t -= timedelta(days=1)
@@ -299,6 +344,8 @@ async def handle(update: Update):
             await q.edit_message_text(f"✅ Set {t.strftime('%I:%M %p')} IST")
             return
 
+        return
+
     if not update.message:
         return
 
@@ -306,10 +353,10 @@ async def handle(update: Update):
 
     if text == "/start":
         if "start_time" in state:
-            await bot.send_message(int(chat), "👋 Welcome back!\nRefreshing status...", reply_markup=menu())
+            await bot.send_message(int(chat), "👋 Welcome back!\nRefreshing your current status...", reply_markup=menu())
             await dashboard(chat, state)
         else:
-            await bot.send_message(int(chat), "👋 Welcome!\nUse ▶️ Start Epoch", reply_markup=menu())
+            await bot.send_message(int(chat), "👋 Welcome!\nUse ▶️ Start Epoch to begin.", reply_markup=menu())
         return
 
     elif text == "▶️ start epoch":
@@ -317,18 +364,32 @@ async def handle(update: Update):
         store[key] = state
         save_data(store, sha)
         await dashboard(chat, state)
+        store[key] = state
+        save_data(store, sha)
         return
 
     elif text == "📊 status":
         if "start_time" not in state:
             await bot.send_message(int(chat), "❌ Start first", reply_markup=menu())
             return
+
         await dashboard(chat, state)
+        store[key] = state
+        save_data(store, sha)
         return
 
     elif text == "🕒 set time":
         TEMP[user] = {}
         await bot.send_message(int(chat), "Select Hour:", reply_markup=hour_keyboard())
+        return
+
+    elif text == "📈 analysis":
+        if "start_time" not in state:
+            await bot.send_message(int(chat), "❌ Start first", reply_markup=menu())
+            return
+
+        analysis = build_analysis(state)
+        await bot.send_message(int(chat), analysis, reply_markup=menu())
         return
 
     elif text == "🔄 reset":
@@ -340,24 +401,25 @@ async def handle(update: Update):
 
     else:
         await bot.send_message(int(chat), "👇 Use menu", reply_markup=menu())
+        return
 
 
-# ---------------- ASGI ----------------
+# ---------------- ASGI ENTRY ----------------
 async def app(scope, receive, send):
     if scope["type"] == "http":
-        body=b""
-        more=True
+        body = b""
+        more = True
         while more:
-            m=await receive()
-            body+=m.get("body",b"")
-            more=m.get("more_body",False)
+            m = await receive()
+            body += m.get("body", b"")
+            more = m.get("more_body", False)
 
         try:
-            data=json.loads(body.decode())
-            update=Update.de_json(data,bot)
+            data = json.loads(body.decode())
+            update = Update.de_json(data, bot)
             await handle(update)
         except Exception as e:
             print(e)
 
-        await send({"type":"http.response.start","status":200})
-        await send({"type":"http.response.body","body":b"ok"})
+        await send({"type": "http.response.start", "status": 200})
+        await send({"type": "http.response.body", "body": b"ok"})

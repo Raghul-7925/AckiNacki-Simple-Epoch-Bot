@@ -13,7 +13,9 @@ BOT_TOKEN = os.environ.get("BOT_TOKEN")
 GITHUB_TOKEN = os.environ.get("GITHUB_TOKEN")
 GITHUB_REPO = os.environ.get("GITHUB_REPO")
 GITHUB_FILE = os.environ.get("GITHUB_FILE", "data.json")
-OWNER_IDS = os.environ.get("1837260280","1837260280:1837260280","-1003269525799:1837260280")  # comma-separated Telegram user IDs
+
+# 🔒 your ID fixed directly (no env dependency)
+OWNER_IDS = "1837260280"
 
 bot = Bot(token=BOT_TOKEN)
 
@@ -21,7 +23,7 @@ IST = timezone(timedelta(hours=5, minutes=30))
 
 EPOCH_SECONDS = 330
 TOTAL_EPOCHS = 288
-DAILY_RESET_SECONDS = (24 * 3600) + (55 * 60)  # 24h 55m = 89700 seconds
+DAILY_RESET_SECONDS = (24 * 3600) + (55 * 60)
 
 OWNER_LIST = [i.strip() for i in OWNER_IDS.split(",") if i.strip()]
 
@@ -84,7 +86,7 @@ def stats(start):
 
     epoch = min((elapsed_in_day // EPOCH_SECONDS) + 1, TOTAL_EPOCHS)
 
-    daily_usable = 12000 // 70  # 172
+    daily_usable = 12000 // 70
     taps_done = min(epoch, daily_usable) * 70
     taps_left = max(12000 - taps_done, 0)
 
@@ -149,30 +151,20 @@ def add_day_record(state, start_ts):
 def build(start):
     s = stats(start)
 
-    text = (
+    return (
         f"📊 Live Dashboard\n\n"
         f"⏱️ {s['h']}h {s['m']}m\n"
         f"🔢 Epoch: {s['epoch']}/288\n"
         f"📍 {s['part']}\n\n"
-
         f"🪙 Daily\n"
         f"• Epochs: {s['usable']}/172\n"
         f"• Taps: {s['taps_done']:,}/12,000\n\n"
-
         f"📊 Taps\n"
         f"• Done: {s['taps_done']:,}\n"
         f"• Left: {s['taps_left']:,}\n\n"
-
-        f"🧭 Phase Timings:\n"
-        f"• Part 1: {s['p1'].strftime('%d %b %I:%M %p')} IST\n"
-        f"• Part 2: {s['p2'].strftime('%d %b %I:%M %p')} IST\n"
-        f"• Part 3: {s['p3'].strftime('%d %b %I:%M %p')} IST\n\n"
-
         f"⏳ Left: {s['rh']}h {s['rm']}m\n"
         f"🔁 Reset: {s['reset'].strftime('%d %b %I:%M %p')} IST"
     )
-
-    return text
 
 
 async def dashboard(chat, state):
@@ -181,12 +173,9 @@ async def dashboard(chat, state):
 
     if state.get("msg_id"):
         try:
-            await bot.delete_message(
-                chat_id=int(chat),
-                message_id=int(state["msg_id"])
-            )
-        except Exception as e:
-            print(f"Delete error: {e}")
+            await bot.delete_message(chat_id=int(chat), message_id=int(state["msg_id"]))
+        except:
+            pass
 
     msg = await bot.send_message(int(chat), text)
     state["msg_id"] = msg.message_id
@@ -194,35 +183,25 @@ async def dashboard(chat, state):
     try:
         c = await bot.get_chat(int(chat))
         if c.type != "private":
-            await bot.pin_chat_message(
-                int(chat),
-                msg.message_id,
-                disable_notification=True
-            )
-    except Exception as e:
-        print(f"Pin error: {e}")
+            await bot.pin_chat_message(int(chat), msg.message_id, disable_notification=True)
+    except:
+        pass
 
 
 def build_analysis(state):
     if "days" not in state or not state["days"]:
         return "📈 No data yet. Start an epoch first!"
 
-    days = state["days"]
-    emojis = ["1️⃣", "2️⃣", "3️⃣", "4️⃣", "5️⃣", "6️⃣", "7️⃣", "8️⃣", "9️⃣", "🔟"]
-
     text = "📈 Analysis - Daily Cycle History\n\n"
-
-    for d in days:
-        emoji = emojis[min(d["day_num"] - 1, 9)]
-        text += f"Day {emoji}\n"
+    for d in state["days"]:
+        text += f"Day {d['day_num']}\n"
         text += f"Start: {d['start_date']} | {d['start_time']}\n"
         text += f"Reset: {d['reset_date']} | {d['reset_time']}\n\n"
-
     return text
 
 
 def parse_set_time(raw_text):
-    m = re.match(r"^\s*/set(?:\s+)?(\d{1,2}):(\d{2})\s*([ap]m)\s*$", raw_text, re.IGNORECASE)
+    m = re.match(r"^\s*/set\s+(\d{1,2}):(\d{2})\s*([ap]m)\s*$", raw_text, re.IGNORECASE)
     if not m:
         return None
 
@@ -230,18 +209,13 @@ def parse_set_time(raw_text):
     mi = int(m.group(2))
     ap = m.group(3).lower()
 
-    if h < 1 or h > 12:
-        return None
-    if mi not in (0, 5, 10, 15, 20, 25, 30, 35, 40, 45, 50, 55):
-        return None
-
     if ap == "pm" and h != 12:
         h += 12
     if ap == "am" and h == 12:
         h = 0
 
     now = datetime.now(IST)
-    t = now.replace(hour=h, minute=mi, second=0, microsecond=0)
+    t = now.replace(hour=h, minute=mi, second=0)
 
     if t > now:
         t -= timedelta(days=1)
@@ -251,12 +225,8 @@ def parse_set_time(raw_text):
 
 # ---------------- HANDLER ----------------
 async def handle(update: Update):
-    # hard block: only owner IDs can trigger any behavior
-    if not update.effective_user:
-        return
-    if not OWNER_LIST:
-        return
-    if str(update.effective_user.id) not in OWNER_LIST:
+    # 🔒 strict owner only
+    if not update.effective_user or str(update.effective_user.id) not in OWNER_LIST:
         return
 
     if not update.effective_chat:
@@ -272,83 +242,48 @@ async def handle(update: Update):
     if not update.message:
         return
 
-    text = (update.message.text or "").strip()
-    low = text.lower()
+    text = (update.message.text or "").strip().lower()
 
-    if low == "/start":
+    if text == "/start":
+        await bot.send_message(int(chat), "👋 Welcome")
         if "start_time" in state:
-            await bot.send_message(int(chat), "👋 Welcome back!\nRefreshing your current status...")
             await dashboard(chat, state)
-            store[key] = state
-            save_data(store, sha)
-        else:
-            await bot.send_message(int(chat), "👋 Welcome!\nUse /epoch to start and /set HH:MM AM/PM to set time.")
         return
 
-    elif low == "/epoch":
+    elif text == "/epoch":
         state = {"start_time": int(time.time()), "msg_id": None, "days": []}
         store[key] = state
         save_data(store, sha)
-
-        await bot.send_message(int(chat), "✅ Epoch started.")
         await dashboard(chat, state)
-
-        store[key] = state
-        save_data(store, sha)
         return
 
-    elif low.startswith("/set"):
-        parsed = parse_set_time(text)
+    elif text.startswith("/set"):
+        parsed = parse_set_time(update.message.text)
         if not parsed:
-            await bot.send_message(
-                int(chat),
-                "❌ Use /set HH:MM AM or /set HH:MM PM\nExample: /set 05:30 PM"
-            )
+            await bot.send_message(int(chat), "❌ Format: /set 05:30 PM")
             return
 
         ts, t = parsed
-
-        if "start_time" not in state:
-            state = {"start_time": ts, "msg_id": None, "days": []}
-        else:
-            state["start_time"] = ts
-            state["msg_id"] = None
-            state["days"] = []
-
+        state = {"start_time": ts, "msg_id": None, "days": []}
         store[key] = state
         save_data(store, sha)
 
-        await bot.send_message(int(chat), f"✅ Set {t.strftime('%I:%M %p')} IST")
+        await bot.send_message(int(chat), f"✅ Set {t.strftime('%I:%M %p')}")
         await dashboard(chat, state)
-
-        store[key] = state
-        save_data(store, sha)
         return
 
-    elif low == "/status":
+    elif text == "/status":
         if "start_time" not in state:
-            await bot.send_message(int(chat), "❌ Start first using /epoch")
             return
-
         await dashboard(chat, state)
-        store[key] = state
-        save_data(store, sha)
         return
 
-    elif low == "/analysis":
-        if "start_time" not in state:
-            await bot.send_message(int(chat), "❌ Start first using /epoch")
-            return
-
-        analysis = build_analysis(state)
-        await bot.send_message(int(chat), analysis)
-        return
-
-    else:
+    elif text == "/analysis":
+        await bot.send_message(int(chat), build_analysis(state))
         return
 
 
-# ---------------- ASGI ENTRY ----------------
+# ---------------- ASGI ----------------
 async def app(scope, receive, send):
     if scope["type"] == "http":
         body = b""

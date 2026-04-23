@@ -25,7 +25,7 @@ IST = timezone(timedelta(hours=5, minutes=30))
 
 EPOCH_SECONDS = 330
 TOTAL_EPOCHS = 288
-DAILY_RESET_SECONDS = (24 * 3600) + (55 * 60)  # 24h 55m = 89700 seconds
+DAILY_RESET_SECONDS = (24 * 3600) + (55 * 60)
 
 
 # ---------------- GITHUB ----------------
@@ -72,11 +72,54 @@ def menu():
     return ReplyKeyboardMarkup(
         [
             ["▶️ Start Epoch", "📊 Status"],
-            ["🕒 Set Time", "🔄 Reset"],
-            ["📈 Analysis"]
+            ["🕒 Set Time", "🔄 Reset"]
         ],
         resize_keyboard=True
     )
+
+def hour_keyboard():
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("1", callback_data="h_1"),
+         InlineKeyboardButton("2", callback_data="h_2"),
+         InlineKeyboardButton("3", callback_data="h_3")],
+
+        [InlineKeyboardButton("4", callback_data="h_4"),
+         InlineKeyboardButton("5", callback_data="h_5"),
+         InlineKeyboardButton("6", callback_data="h_6")],
+
+        [InlineKeyboardButton("7", callback_data="h_7"),
+         InlineKeyboardButton("8", callback_data="h_8"),
+         InlineKeyboardButton("9", callback_data="h_9")],
+
+        [InlineKeyboardButton("10", callback_data="h_10"),
+         InlineKeyboardButton("11", callback_data="h_11"),
+         InlineKeyboardButton("12", callback_data="h_12")],
+    ])
+
+def minute_keyboard():
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("00", callback_data="m_0"),
+         InlineKeyboardButton("05", callback_data="m_5"),
+         InlineKeyboardButton("10", callback_data="m_10")],
+
+        [InlineKeyboardButton("15", callback_data="m_15"),
+         InlineKeyboardButton("20", callback_data="m_20"),
+         InlineKeyboardButton("25", callback_data="m_25")],
+
+        [InlineKeyboardButton("30", callback_data="m_30"),
+         InlineKeyboardButton("35", callback_data="m_35"),
+         InlineKeyboardButton("40", callback_data="m_40")],
+
+        [InlineKeyboardButton("45", callback_data="m_45"),
+         InlineKeyboardButton("50", callback_data="m_50"),
+         InlineKeyboardButton("55", callback_data="m_55")],
+    ])
+
+def ampm_keyboard():
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("AM", callback_data="am"),
+         InlineKeyboardButton("PM", callback_data="pm")]
+    ])
 
 
 # ---------------- CALC ----------------
@@ -93,14 +136,12 @@ def stats(start):
     now = int(time.time())
     elapsed = now - start
 
-    # Calculate which day and epoch within that day
     days_passed = elapsed // DAILY_RESET_SECONDS
     elapsed_in_day = elapsed % DAILY_RESET_SECONDS
 
     epoch = min((elapsed_in_day // EPOCH_SECONDS) + 1, TOTAL_EPOCHS)
     
-    # Daily usable epochs (172 per day)
-    daily_usable = 12000 // 70  # 172
+    daily_usable = 12000 // 70
     taps_done = min(epoch, daily_usable) * 70
     taps_left = max(12000 - taps_done, 0)
 
@@ -111,7 +152,6 @@ def stats(start):
     rh = rem // 3600
     rm = (rem % 3600) // 60
 
-    # Times for this day
     day_start = start + (days_passed * DAILY_RESET_SECONDS)
     p1 = datetime.fromtimestamp(day_start, IST)
     p2 = datetime.fromtimestamp(day_start + 96 * EPOCH_SECONDS, IST)
@@ -136,7 +176,6 @@ def stats(start):
     }
 
 
-# Store day history
 def add_day_record(state, start_ts):
     if "days" not in state:
         state["days"] = []
@@ -159,7 +198,6 @@ def add_day_record(state, start_ts):
         "reset_time": reset_dt.strftime("%I:%M %p")
     }
     
-    # Check if this day already exists
     if not any(d["day_num"] == record["day_num"] for d in state["days"]):
         state["days"].append(record)
 
@@ -168,36 +206,24 @@ def add_day_record(state, start_ts):
 def build(start):
     s = stats(start)
 
-    text = (
+    return (
         f"📊 Live Dashboard\n\n"
         f"⏱️ {s['h']}h {s['m']}m\n"
         f"🔢 Epoch: {s['epoch']}/288\n"
         f"📍 {s['part']}\n\n"
-
         f"🪙 Daily\n"
         f"• Epochs: {s['usable']}/172\n"
         f"• Taps: {s['taps_done']:,}/12,000\n\n"
-
         f"📊 Taps\n"
         f"• Done: {s['taps_done']:,}\n"
         f"• Left: {s['taps_left']:,}\n\n"
-
-        f"🧭 Phase Timings:\n"
-        f"• Part 1: {s['p1'].strftime('%d %b %I:%M %p')} IST\n"
-        f"• Part 2: {s['p2'].strftime('%d %b %I:%M %p')} IST\n"
-        f"• Part 3: {s['p3'].strftime('%d %b %I:%M %p')} IST\n\n"
-
         f"⏳ Left: {s['rh']}h {s['rm']}m\n"
         f"🔁 Reset: {s['reset'].strftime('%d %b %I:%M %p')} IST"
     )
 
-    return text
-
 
 async def dashboard(chat, state):
     text = build(state["start_time"])
-    
-    # Record this day
     add_day_record(state, state["start_time"])
 
     if state.get("msg_id"):
@@ -209,37 +235,11 @@ async def dashboard(chat, state):
                 reply_markup=menu()
             )
             return
-        except Exception as e:
-            print(f"Edit error: {e}")
+        except:
+            pass
 
     msg = await bot.send_message(int(chat), text, reply_markup=menu())
     state["msg_id"] = msg.message_id
-
-    try:
-        c = await bot.get_chat(int(chat))
-        if c.type != "private":
-            await bot.pin_chat_message(int(chat), msg.message_id, disable_notification=True)
-    except:
-        pass
-
-
-def build_analysis(state):
-    if "days" not in state or not state["days"]:
-        return "📈 No data yet. Start an epoch first!"
-    
-    days = state["days"]
-    emojis = ["1️⃣", "2️⃣", "3️⃣", "4️⃣", "5️⃣", "6️⃣", "7️⃣", "8️⃣", "9️⃣", "🔟"]
-    
-    text = "📈 Analysis - Daily Cycle History\n\n"
-    
-    for d in days:
-        emoji = emojis[min(d['day_num'] - 1, 9)]
-        text += f"Day {emoji}\n"
-        text += f"Start: {d['start_date']} | {d['start_time']}\n"
-        text += f"Reset: {d['reset_date']} | {d['reset_time']}\n"
-        text += "\n"
-    
-    return text
 
 
 # ---------------- HANDLER ----------------
@@ -253,7 +253,6 @@ async def handle(update: Update):
     store, sha = load_data()
     state = store.get(key, {})
 
-    # CALLBACK (manual time)
     if update.callback_query:
         q = update.callback_query
         await q.answer()
@@ -265,26 +264,15 @@ async def handle(update: Update):
 
         if d.startswith("h_"):
             TEMP[user]["h"] = int(d.split("_")[1])
-            await bot.send_message(int(chat), "Select Minute:", reply_markup=InlineKeyboardMarkup([
-                [InlineKeyboardButton(f"{i:02}", callback_data=f"m_{i}") for i in range(0,60,10)]
-            ]))
+            await bot.send_message(int(chat), "Select Minute:", reply_markup=minute_keyboard())
             return
 
         elif d.startswith("m_"):
-            if "h" not in TEMP.get(user, {}):
-                await q.edit_message_text("❌ Use 🕒 Set Time again")
-                return
             TEMP[user]["m"] = int(d.split("_")[1])
-            await bot.send_message(int(chat), "AM or PM?", reply_markup=InlineKeyboardMarkup([
-                [InlineKeyboardButton("AM", callback_data="am"), InlineKeyboardButton("PM", callback_data="pm")]
-            ]))
+            await bot.send_message(int(chat), "AM or PM?", reply_markup=ampm_keyboard())
             return
 
         elif d in ["am","pm"]:
-            if "h" not in TEMP.get(user, {}) or "m" not in TEMP.get(user, {}):
-                await q.edit_message_text("❌ Use 🕒 Set Time again")
-                return
-                
             h = TEMP[user]["h"]
             m = TEMP[user]["m"]
 
@@ -305,13 +293,11 @@ async def handle(update: Update):
 
             store[key] = state
             save_data(store, sha)
-            
+
             TEMP[user] = {}
 
             await q.edit_message_text(f"✅ Set {t.strftime('%I:%M %p')} IST")
             return
-
-        return
 
     if not update.message:
         return
@@ -320,10 +306,10 @@ async def handle(update: Update):
 
     if text == "/start":
         if "start_time" in state:
-            await bot.send_message(int(chat), "👋 Welcome back!\nRefreshing your current status...", reply_markup=menu())
+            await bot.send_message(int(chat), "👋 Welcome back!\nRefreshing status...", reply_markup=menu())
             await dashboard(chat, state)
         else:
-            await bot.send_message(int(chat), "👋 Welcome!\nUse ▶️ Start Epoch to begin.", reply_markup=menu())
+            await bot.send_message(int(chat), "👋 Welcome!\nUse ▶️ Start Epoch", reply_markup=menu())
         return
 
     elif text == "▶️ start epoch":
@@ -331,34 +317,18 @@ async def handle(update: Update):
         store[key] = state
         save_data(store, sha)
         await dashboard(chat, state)
-        store[key] = state
-        save_data(store, sha)
         return
 
     elif text == "📊 status":
         if "start_time" not in state:
             await bot.send_message(int(chat), "❌ Start first", reply_markup=menu())
             return
-
         await dashboard(chat, state)
-        store[key] = state
-        save_data(store, sha)
         return
 
     elif text == "🕒 set time":
         TEMP[user] = {}
-        await bot.send_message(int(chat), "Select Hour:", reply_markup=InlineKeyboardMarkup([
-            [InlineKeyboardButton(str(i), callback_data=f"h_{i}") for i in range(1,13)]
-        ]))
-        return
-
-    elif text == "📈 analysis":
-        if "start_time" not in state:
-            await bot.send_message(int(chat), "❌ Start first", reply_markup=menu())
-            return
-        
-        analysis = build_analysis(state)
-        await bot.send_message(int(chat), analysis, parse_mode="HTML", reply_markup=menu())
+        await bot.send_message(int(chat), "Select Hour:", reply_markup=hour_keyboard())
         return
 
     elif text == "🔄 reset":
@@ -370,10 +340,9 @@ async def handle(update: Update):
 
     else:
         await bot.send_message(int(chat), "👇 Use menu", reply_markup=menu())
-        return
 
 
-# ---------------- ASGI ENTRY ----------------
+# ---------------- ASGI ----------------
 async def app(scope, receive, send):
     if scope["type"] == "http":
         body=b""

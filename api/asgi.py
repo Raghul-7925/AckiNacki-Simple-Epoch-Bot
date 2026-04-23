@@ -2,22 +2,18 @@ import base64
 import json
 import time
 import os
+import re
 from datetime import datetime, timedelta, timezone
 from urllib.request import Request, urlopen
 from urllib.error import HTTPError
 
-from telegram import (
-    Bot,
-    Update,
-    ReplyKeyboardMarkup,
-    InlineKeyboardMarkup,
-    InlineKeyboardButton,
-)
+from telegram import Bot, Update
 
 BOT_TOKEN = os.environ.get("BOT_TOKEN")
 GITHUB_TOKEN = os.environ.get("GITHUB_TOKEN")
 GITHUB_REPO = os.environ.get("GITHUB_REPO")
 GITHUB_FILE = os.environ.get("GITHUB_FILE", "data.json")
+OWNER_ID = os.environ.get("1837260280")  # set this to your Telegram numeric user id
 
 bot = Bot(token=BOT_TOKEN)
 
@@ -26,6 +22,15 @@ IST = timezone(timedelta(hours=5, minutes=30))
 EPOCH_SECONDS = 330
 TOTAL_EPOCHS = 288
 DAILY_RESET_SECONDS = (24 * 3600) + (55 * 60)  # 24h 55m = 89700 seconds
+
+
+# ---------------- ACCESS ----------------
+def is_owner(update: Update):
+    if not OWNER_ID:
+        return True
+    if not update.effective_user:
+        return False
+    return str(update.effective_user.id) == str(OWNER_ID)
 
 
 # ---------------- GITHUB ----------------
@@ -65,62 +70,6 @@ def save_data(store, sha):
         req.add_header(k, v)
     req.add_header("Content-Type", "application/json")
     urlopen(req)
-
-
-# ---------------- UI ----------------
-def menu():
-    return ReplyKeyboardMarkup(
-        [
-            ["▶️ Start Epoch", "📊 Status"],
-            ["🕒 Set Time", "🔄 Reset"],
-            ["📈 Analysis"]
-        ],
-        resize_keyboard=True
-    )
-
-def hour_keyboard():
-    return InlineKeyboardMarkup([
-        [InlineKeyboardButton("1", callback_data="h_1"),
-         InlineKeyboardButton("2", callback_data="h_2"),
-         InlineKeyboardButton("3", callback_data="h_3")],
-
-        [InlineKeyboardButton("4", callback_data="h_4"),
-         InlineKeyboardButton("5", callback_data="h_5"),
-         InlineKeyboardButton("6", callback_data="h_6")],
-
-        [InlineKeyboardButton("7", callback_data="h_7"),
-         InlineKeyboardButton("8", callback_data="h_8"),
-         InlineKeyboardButton("9", callback_data="h_9")],
-
-        [InlineKeyboardButton("10", callback_data="h_10"),
-         InlineKeyboardButton("11", callback_data="h_11"),
-         InlineKeyboardButton("12", callback_data="h_12")],
-    ])
-
-def minute_keyboard():
-    return InlineKeyboardMarkup([
-        [InlineKeyboardButton("00", callback_data="m_0"),
-         InlineKeyboardButton("05", callback_data="m_5"),
-         InlineKeyboardButton("10", callback_data="m_10")],
-
-        [InlineKeyboardButton("15", callback_data="m_15"),
-         InlineKeyboardButton("20", callback_data="m_20"),
-         InlineKeyboardButton("25", callback_data="m_25")],
-
-        [InlineKeyboardButton("30", callback_data="m_30"),
-         InlineKeyboardButton("35", callback_data="m_35"),
-         InlineKeyboardButton("40", callback_data="m_40")],
-
-        [InlineKeyboardButton("45", callback_data="m_45"),
-         InlineKeyboardButton("50", callback_data="m_50"),
-         InlineKeyboardButton("55", callback_data="m_55")],
-    ])
-
-def ampm_keyboard():
-    return InlineKeyboardMarkup([
-        [InlineKeyboardButton("AM", callback_data="am"),
-         InlineKeyboardButton("PM", callback_data="pm")]
-    ])
 
 
 # ---------------- CALC ----------------
@@ -235,7 +184,6 @@ def build(start):
 
 async def dashboard(chat, state):
     text = build(state["start_time"])
-
     add_day_record(state, state["start_time"])
 
     if state.get("msg_id"):
@@ -243,14 +191,13 @@ async def dashboard(chat, state):
             await bot.edit_message_text(
                 chat_id=int(chat),
                 message_id=int(state["msg_id"]),
-                text=text,
-                reply_markup=menu()
+                text=text
             )
             return
         except Exception as e:
             print(f"Edit error: {e}")
 
-    msg = await bot.send_message(int(chat), text, reply_markup=menu())
+    msg = await bot.send_message(int(chat), text)
     state["msg_id"] = msg.message_id
 
     try:
@@ -279,10 +226,42 @@ def build_analysis(state):
     return text
 
 
-# ---------------- HANDLER ----------------
-TEMP = {}
+def parse_set_time(raw_text):
+    m = re.match(r"^\s*/set(?:\s+)?(\d{1,2}):(\d{2})\s*([ap]m)\s*$", raw_text, re.IGNORECASE)
+    if not m:
+        return None
 
+    h = int(m.group(1))
+    mi = int(m.group(2))
+    ap = m.group(3).lower()
+
+    if h < 1 or h > 12:
+        return None
+    if mi not in (0, 5, 10, 15, 20, 25, 30, 35, 40, 45, 50, 55):
+        return None
+
+    if ap == "pm" and h != 12:
+        h += 12
+    if ap == "am" and h == 12:
+        h = 0
+
+    now = datetime.now(IST)
+    t = now.replace(hour=h, minute=mi, second=0, microsecond=0)
+
+    if t > now:
+        t -= timedelta(days=1)
+
+    return int(t.timestamp()), t
+
+
+# ---------------- HANDLER ----------------
 async def handle(update: Update):
+    if not is_owner(update):
+        return
+
+    if not update.effective_chat or not update.effective_user:
+        return
+
     chat = str(update.effective_chat.id)
     user = str(update.effective_user.id)
     key = f"{chat}:{user}"
@@ -290,87 +269,60 @@ async def handle(update: Update):
     store, sha = load_data()
     state = store.get(key, {})
 
-    if update.callback_query:
-        q = update.callback_query
-        await q.answer()
-
-        if user not in TEMP:
-            TEMP[user] = {}
-
-        d = q.data
-
-        if d.startswith("h_"):
-            TEMP[user]["h"] = int(d.split("_")[1])
-            await bot.send_message(int(chat), "Select Minute:", reply_markup=minute_keyboard())
-            return
-
-        elif d.startswith("m_"):
-            if "h" not in TEMP.get(user, {}):
-                await q.edit_message_text("❌ Use 🕒 Set Time again")
-                return
-
-            TEMP[user]["m"] = int(d.split("_")[1])
-            await bot.send_message(int(chat), "AM or PM?", reply_markup=ampm_keyboard())
-            return
-
-        elif d in ["am", "pm"]:
-            if "h" not in TEMP.get(user, {}) or "m" not in TEMP.get(user, {}):
-                await q.edit_message_text("❌ Use 🕒 Set Time again")
-                return
-
-            h = TEMP[user]["h"]
-            m = TEMP[user]["m"]
-
-            if d == "pm" and h != 12:
-                h += 12
-            if d == "am" and h == 12:
-                h = 0
-
-            now = datetime.now(IST)
-            t = now.replace(hour=h, minute=m, second=0, microsecond=0)
-
-            if t > now:
-                t -= timedelta(days=1)
-
-            state["start_time"] = int(t.timestamp())
-            state["msg_id"] = None
-            state["days"] = []
-
-            store[key] = state
-            save_data(store, sha)
-
-            TEMP[user] = {}
-
-            await q.edit_message_text(f"✅ Set {t.strftime('%I:%M %p')} IST")
-            return
-
-        return
-
     if not update.message:
         return
 
-    text = (update.message.text or "").lower().strip()
+    text = (update.message.text or "").strip()
+    low = text.lower()
 
-    if text == "/start":
+    if low == "/start":
         if "start_time" in state:
-            await bot.send_message(int(chat), "👋 Welcome back!\nRefreshing your current status...", reply_markup=menu())
+            await bot.send_message(int(chat), "👋 Welcome back!\nRefreshing your current status...")
             await dashboard(chat, state)
         else:
-            await bot.send_message(int(chat), "👋 Welcome!\nUse ▶️ Start Epoch to begin.", reply_markup=menu())
+            await bot.send_message(int(chat), "👋 Welcome!\nUse /epoch to start and /set HH:MM AM/PM to set time.")
         return
 
-    elif text == "▶️ start epoch":
+    elif low == "/epoch":
         state = {"start_time": int(time.time()), "msg_id": None, "days": []}
         store[key] = state
         save_data(store, sha)
+        await bot.send_message(int(chat), "✅ Epoch started.")
         await dashboard(chat, state)
         store[key] = state
         save_data(store, sha)
         return
 
-    elif text == "📊 status":
+    elif low.startswith("/set"):
+        parsed = parse_set_time(text)
+        if not parsed:
+            await bot.send_message(
+                int(chat),
+                "❌ Use /set HH:MM AM or /set HH:MM PM\nExample: /set 05:30 PM"
+            )
+            return
+
+        ts, t = parsed
+
         if "start_time" not in state:
-            await bot.send_message(int(chat), "❌ Start first", reply_markup=menu())
+            state = {"start_time": ts, "msg_id": None, "days": []}
+        else:
+            state["start_time"] = ts
+            state["msg_id"] = None
+            state["days"] = []
+
+        store[key] = state
+        save_data(store, sha)
+
+        await bot.send_message(int(chat), f"✅ Set {t.strftime('%I:%M %p')} IST")
+        await dashboard(chat, state)
+        store[key] = state
+        save_data(store, sha)
+        return
+
+    elif low == "/status":
+        if "start_time" not in state:
+            await bot.send_message(int(chat), "❌ Start first using /epoch")
             return
 
         await dashboard(chat, state)
@@ -378,29 +330,16 @@ async def handle(update: Update):
         save_data(store, sha)
         return
 
-    elif text == "🕒 set time":
-        TEMP[user] = {}
-        await bot.send_message(int(chat), "Select Hour:", reply_markup=hour_keyboard())
-        return
-
-    elif text == "📈 analysis":
+    elif low == "/analysis":
         if "start_time" not in state:
-            await bot.send_message(int(chat), "❌ Start first", reply_markup=menu())
+            await bot.send_message(int(chat), "❌ Start first using /epoch")
             return
 
         analysis = build_analysis(state)
-        await bot.send_message(int(chat), analysis, reply_markup=menu())
-        return
-
-    elif text == "🔄 reset":
-        if key in store:
-            del store[key]
-            save_data(store, sha)
-        await bot.send_message(int(chat), "🗑️ Reset done", reply_markup=menu())
+        await bot.send_message(int(chat), analysis)
         return
 
     else:
-        await bot.send_message(int(chat), "👇 Use menu", reply_markup=menu())
         return
 
 

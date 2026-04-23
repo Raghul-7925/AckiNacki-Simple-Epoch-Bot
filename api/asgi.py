@@ -23,16 +23,7 @@ EPOCH_SECONDS = 330
 TOTAL_EPOCHS = 288
 DAILY_RESET_SECONDS = (24 * 3600) + (55 * 60)  # 24h 55m = 89700 seconds
 
-
-# ---------------- ACCESS ----------------
 OWNER_LIST = [i.strip() for i in OWNER_IDS.split(",") if i.strip()]
-
-def is_owner(update: Update):
-    if not OWNER_LIST:
-        return True
-    if not update.effective_user:
-        return False
-    return str(update.effective_user.id) in OWNER_LIST
 
 
 # ---------------- GITHUB ----------------
@@ -260,10 +251,15 @@ def parse_set_time(raw_text):
 
 # ---------------- HANDLER ----------------
 async def handle(update: Update):
-    if not is_owner(update):
+    # hard block: only owner IDs can trigger any behavior
+    if not update.effective_user:
+        return
+    if not OWNER_LIST:
+        return
+    if str(update.effective_user.id) not in OWNER_LIST:
         return
 
-    if not update.effective_chat or not update.effective_user:
+    if not update.effective_chat:
         return
 
     chat = str(update.effective_chat.id)
@@ -283,6 +279,8 @@ async def handle(update: Update):
         if "start_time" in state:
             await bot.send_message(int(chat), "👋 Welcome back!\nRefreshing your current status...")
             await dashboard(chat, state)
+            store[key] = state
+            save_data(store, sha)
         else:
             await bot.send_message(int(chat), "👋 Welcome!\nUse /epoch to start and /set HH:MM AM/PM to set time.")
         return
@@ -291,8 +289,10 @@ async def handle(update: Update):
         state = {"start_time": int(time.time()), "msg_id": None, "days": []}
         store[key] = state
         save_data(store, sha)
+
         await bot.send_message(int(chat), "✅ Epoch started.")
         await dashboard(chat, state)
+
         store[key] = state
         save_data(store, sha)
         return
@@ -320,6 +320,7 @@ async def handle(update: Update):
 
         await bot.send_message(int(chat), f"✅ Set {t.strftime('%I:%M %p')} IST")
         await dashboard(chat, state)
+
         store[key] = state
         save_data(store, sha)
         return

@@ -5,7 +5,6 @@ import os
 import re
 from datetime import datetime, timedelta, timezone
 from urllib.request import Request, urlopen
-from urllib.error import HTTPError
 
 from telegram import Bot, Update
 
@@ -14,7 +13,6 @@ GITHUB_TOKEN = os.environ.get("GITHUB_TOKEN")
 GITHUB_REPO = os.environ.get("GITHUB_REPO")
 GITHUB_FILE = os.environ.get("GITHUB_FILE", "data.json")
 
-# 🔒 your ID fixed directly (no env dependency)
 OWNER_IDS = "1837260280"
 
 bot = Bot(token=BOT_TOKEN)
@@ -86,7 +84,7 @@ def stats(start):
 
     epoch = min((elapsed_in_day // EPOCH_SECONDS) + 1, TOTAL_EPOCHS)
 
-    daily_usable = 12000 // 70
+    daily_usable = 12000 // 70  # 172
     taps_done = min(epoch, daily_usable) * 70
     taps_left = max(12000 - taps_done, 0)
 
@@ -151,20 +149,30 @@ def add_day_record(state, start_ts):
 def build(start):
     s = stats(start)
 
-    return (
+    text = (
         f"📊 Live Dashboard\n\n"
         f"⏱️ {s['h']}h {s['m']}m\n"
         f"🔢 Epoch: {s['epoch']}/288\n"
         f"📍 {s['part']}\n\n"
+
         f"🪙 Daily\n"
         f"• Epochs: {s['usable']}/172\n"
         f"• Taps: {s['taps_done']:,}/12,000\n\n"
+
         f"📊 Taps\n"
         f"• Done: {s['taps_done']:,}\n"
         f"• Left: {s['taps_left']:,}\n\n"
+
+        f"🧭 Phase Timings:\n"
+        f"• Part 1: {s['p1'].strftime('%d %b %I:%M %p')} IST\n"
+        f"• Part 2: {s['p2'].strftime('%d %b %I:%M %p')} IST\n"
+        f"• Part 3: {s['p3'].strftime('%d %b %I:%M %p')} IST\n\n"
+
         f"⏳ Left: {s['rh']}h {s['rm']}m\n"
         f"🔁 Reset: {s['reset'].strftime('%d %b %I:%M %p')} IST"
     )
+
+    return text
 
 
 async def dashboard(chat, state):
@@ -215,7 +223,7 @@ def parse_set_time(raw_text):
         h = 0
 
     now = datetime.now(IST)
-    t = now.replace(hour=h, minute=mi, second=0)
+    t = now.replace(hour=h, minute=mi, second=0, microsecond=0)
 
     if t > now:
         t -= timedelta(days=1)
@@ -225,7 +233,6 @@ def parse_set_time(raw_text):
 
 # ---------------- HANDLER ----------------
 async def handle(update: Update):
-    # 🔒 strict owner only
     if not update.effective_user or str(update.effective_user.id) not in OWNER_LIST:
         return
 
@@ -242,23 +249,26 @@ async def handle(update: Update):
     if not update.message:
         return
 
-    text = (update.message.text or "").strip().lower()
+    text = (update.message.text or "").strip()
+    low = text.lower()
 
-    if text == "/start":
+    if low == "/start":
         await bot.send_message(int(chat), "👋 Welcome")
         if "start_time" in state:
             await dashboard(chat, state)
+            store[key] = state
+            save_data(store, sha)
         return
 
-    elif text == "/epoch":
+    elif low == "/epoch":
         state = {"start_time": int(time.time()), "msg_id": None, "days": []}
         store[key] = state
         save_data(store, sha)
         await dashboard(chat, state)
         return
 
-    elif text.startswith("/set"):
-        parsed = parse_set_time(update.message.text)
+    elif low.startswith("/set"):
+        parsed = parse_set_time(text)
         if not parsed:
             await bot.send_message(int(chat), "❌ Format: /set 05:30 PM")
             return
@@ -272,14 +282,29 @@ async def handle(update: Update):
         await dashboard(chat, state)
         return
 
-    elif text == "/status":
+    elif low == "/status":
         if "start_time" not in state:
             return
         await dashboard(chat, state)
+        store[key] = state
+        save_data(store, sha)
         return
 
-    elif text == "/analysis":
+    elif low == "/analysis":
         await bot.send_message(int(chat), build_analysis(state))
+        return
+
+    elif low == "/reset":
+        if key in store:
+            old = store[key]
+            if old.get("msg_id"):
+                try:
+                    await bot.delete_message(chat_id=int(chat), message_id=int(old["msg_id"]))
+                except:
+                    pass
+            del store[key]
+            save_data(store, sha)
+        await bot.send_message(int(chat), "🗑️ Reset done")
         return
 
 

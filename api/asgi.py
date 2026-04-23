@@ -318,7 +318,15 @@ async def handle(update: Update):
 
     text = (update.message.text or "").lower().strip()
 
-    if text in ["▶️ start epoch","/start"]:
+    if text == "/start":
+        if "start_time" in state:
+            await bot.send_message(int(chat), "👋 Welcome back!\nRefreshing your current status...", reply_markup=menu())
+            await dashboard(chat, state)
+        else:
+            await bot.send_message(int(chat), "👋 Welcome!\nUse ▶️ Start Epoch to begin.", reply_markup=menu())
+        return
+
+    elif text == "▶️ start epoch":
         state = {"start_time": int(time.time()), "msg_id": None, "days": []}
         store[key] = state
         save_data(store, sha)
@@ -384,4 +392,3 @@ async def app(scope, receive, send):
 
         await send({"type":"http.response.start","status":200})
         await send({"type":"http.response.body","body":b"ok"})
-    

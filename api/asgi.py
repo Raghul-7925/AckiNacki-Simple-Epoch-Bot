@@ -228,23 +228,17 @@ def build_analysis(state):
         return "📈 No data yet. Start an epoch first!"
     
     days = state["days"]
+    emojis = ["1️⃣", "2️⃣", "3️⃣", "4️⃣", "5️⃣", "6️⃣", "7️⃣", "8️⃣", "9️⃣", "🔟"]
     
-    # Use monospace code formatting for proper alignment
     text = "📈 Analysis - Daily Cycle History\n\n"
-    text += "<code>"
-    text += "Day | Start Date       | Start Time    | Reset Date       | Reset Time\n"
-    text += "────────────────────────────────────────────────────────────────────────────\n"
     
     for d in days:
-        day_num = str(d['day_num']).rjust(3)
-        start_date = d['start_date'].ljust(16)
-        start_time = d['start_time'].ljust(14)
-        reset_date = d['reset_date'].ljust(16)
-        reset_time = d['reset_time']
-        
-        text += f"{day_num} | {start_date} | {start_time} | {reset_date} | {reset_time}\n"
+        emoji = emojis[min(d['day_num'] - 1, 9)]
+        text += f"Day {emoji}\n"
+        text += f"Start: {d['start_date']} | {d['start_time']}\n"
+        text += f"Reset: {d['reset_date']} | {d['reset_time']}\n"
+        text += "\n"
     
-    text += "</code>"
     return text
 
 

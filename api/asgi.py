@@ -13,7 +13,7 @@ BOT_TOKEN = os.environ.get("BOT_TOKEN")
 GITHUB_TOKEN = os.environ.get("GITHUB_TOKEN")
 GITHUB_REPO = os.environ.get("GITHUB_REPO")
 GITHUB_FILE = os.environ.get("GITHUB_FILE", "data.json")
-OWNER_IDS = os.environ.get("1837260280", "")  # comma-separated Telegram user IDs
+OWNER_IDS = os.environ.get("1837260280")  # comma-separated Telegram user IDs
 
 bot = Bot(token=BOT_TOKEN)
 

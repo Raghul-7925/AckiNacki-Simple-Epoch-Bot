@@ -286,6 +286,9 @@ async def handle(update: Update):
 
     # ========== PUBLIC COMMANDS (Everyone) ==========
     if low == "/status":
+        owner_key = f"{chat}:{OWNER_LIST[0]}" if OWNER_LIST else key
+        state = store.get(owner_key, {})
+
         if "start_time" not in state:
             await bot.send_message(int(chat), "❌ No epoch running. Owner needs to start one.")
             return
@@ -295,7 +298,7 @@ async def handle(update: Update):
             await bot.send_message(int(chat), "🎉 Epoch has reset! Starting new day...")
         
         await dashboard(chat, state)
-        store[key] = state
+        store[owner_key] = state
         save_data(store, sha)
         return
 
@@ -383,4 +386,3 @@ async def app(scope, receive, send):
 
         await send({"type": "http.response.start", "status": 200})
         await send({"type": "http.response.body", "body": b"ok"})
-    

@@ -3,6 +3,7 @@ import json
 import time
 import os
 import re
+import asyncio
 from datetime import datetime, timedelta, timezone
 from urllib.request import Request, urlopen
 
@@ -23,7 +24,7 @@ CEST = timezone(timedelta(hours=2))
 
 EPOCH_SECONDS = 330
 TOTAL_EPOCHS = 288
-DAILY_RESET_SECONDS = (24 * 3600) + (55 * 60)
+DAILY_RESET_SECONDS = (24 * 3600) + (45 * 60)  # 24h 45m = 89100 seconds (10min early)
 
 OWNER_LIST = [i.strip() for i in OWNER_IDS.split(",") if i.strip()]
 
@@ -70,7 +71,6 @@ def save_data(store, sha):
 # -------- TIMEZONE CONVERSION --------
 def format_time_with_zones(dt_ist):
     """Convert IST datetime to UTC and CEST, return formatted string"""
-    # dt_ist is in IST timezone
     utc_dt = dt_ist.astimezone(UTC)
     cest_dt = dt_ist.astimezone(CEST)
     
@@ -131,7 +131,8 @@ def stats(start):
         "p2": p2,
         "p3": p3,
         "reset": reset,
-        "day": days_passed + 1
+        "day": days_passed + 1,
+        "rem_seconds": rem
     }
 
 
@@ -159,6 +160,21 @@ def add_day_record(state, start_ts):
 
     if not any(d["day_num"] == record["day_num"] for d in state["days"]):
         state["days"].append(record)
+
+
+# Check if reset just happened
+def check_reset_boundary(state):
+    """Check if we just crossed the reset time"""
+    if "last_reset_day" not in state:
+        s = stats(state["start_time"])
+        state["last_reset_day"] = s["day"]
+        return False
+    
+    s = stats(state["start_time"])
+    if s["day"] > state["last_reset_day"]:
+        state["last_reset_day"] = s["day"]
+        return True
+    return False
 
 
 # ---------------- DASHBOARD ----------------
@@ -247,6 +263,9 @@ def parse_set_time(raw_text):
     return int(t.timestamp()), t
 
 
+# Temporary storage for deletion tasks
+deletion_tasks = {}
+
 # ---------------- HANDLER ----------------
 async def handle(update: Update):
     if not update.effective_user or not update.effective_chat:
@@ -270,6 +289,11 @@ async def handle(update: Update):
         if "start_time" not in state:
             await bot.send_message(int(chat), "❌ No epoch running. Owner needs to start one.")
             return
+        
+        # Check for reset
+        if check_reset_boundary(state):
+            await bot.send_message(int(chat), "🎉 Epoch has reset! Starting new day...")
+        
         await dashboard(chat, state)
         store[key] = state
         save_data(store, sha)
@@ -277,7 +301,19 @@ async def handle(update: Update):
 
     # ========== OWNER-ONLY COMMANDS ==========
     if user_id not in OWNER_LIST:
-        await bot.send_message(int(chat), "❌ Restricted /status only allowed")
+        # Send helpful message instead of restriction
+        msg = await bot.send_message(int(chat), "💡 Use /status to check the dashboard and see live updates!")
+        
+        # Delete message after 30 seconds
+        async def delete_after_30s():
+            await asyncio.sleep(30)
+            try:
+                await bot.delete_message(chat_id=int(chat), message_id=msg.message_id)
+            except:
+                pass
+        
+        # Create task to delete message
+        asyncio.create_task(delete_after_30s())
         return
 
     if low == "/start":
@@ -289,7 +325,7 @@ async def handle(update: Update):
         return
 
     elif low == "/epoch":
-        state = {"start_time": int(time.time()), "msg_id": None, "days": []}
+        state = {"start_time": int(time.time()), "msg_id": None, "days": [], "last_reset_day": 1}
         store[key] = state
         save_data(store, sha)
         await dashboard(chat, state)
@@ -302,7 +338,7 @@ async def handle(update: Update):
             return
 
         ts, t = parsed
-        state = {"start_time": ts, "msg_id": None, "days": []}
+        state = {"start_time": ts, "msg_id": None, "days": [], "last_reset_day": 1}
         store[key] = state
         save_data(store, sha)
 
@@ -347,4 +383,4 @@ async def app(scope, receive, send):
 
         await send({"type": "http.response.start", "status": 200})
         await send({"type": "http.response.body", "body": b"ok"})
-        
+    

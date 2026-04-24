@@ -277,7 +277,7 @@ async def handle(update: Update):
 
     # ========== OWNER-ONLY COMMANDS ==========
     if user_id not in OWNER_LIST:
-        await bot.send_message(int(chat), "❌ Restricted. Only owner can use this command.")
+        await bot.send_message(int(chat), "❌ Restricted /status only allowed")
         return
 
     if low == "/start":

@@ -18,6 +18,8 @@ OWNER_IDS = "1837260280"
 bot = Bot(token=BOT_TOKEN)
 
 IST = timezone(timedelta(hours=5, minutes=30))
+UTC = timezone.utc
+CEST = timezone(timedelta(hours=2))
 
 EPOCH_SECONDS = 330
 TOTAL_EPOCHS = 288
@@ -63,6 +65,20 @@ def save_data(store, sha):
         req.add_header(k, v)
     req.add_header("Content-Type", "application/json")
     urlopen(req)
+
+
+# -------- TIMEZONE CONVERSION --------
+def format_time_with_zones(dt_ist):
+    """Convert IST datetime to UTC and CEST, return formatted string"""
+    # dt_ist is in IST timezone
+    utc_dt = dt_ist.astimezone(UTC)
+    cest_dt = dt_ist.astimezone(CEST)
+    
+    ist_str = dt_ist.strftime("%d %b %I:%M %p")
+    utc_str = utc_dt.strftime("%I:%M %p")
+    cest_str = cest_dt.strftime("%I:%M %p")
+    
+    return f"{ist_str} IST [UTC: {utc_str} | CEST: {cest_str}]"
 
 
 # ---------------- CALC ----------------
@@ -164,12 +180,12 @@ def build(start):
         f"• Left: {s['taps_left']:,}\n\n"
 
         f"🧭 Phase Timings:\n"
-        f"• Part 1: {s['p1'].strftime('%d %b %I:%M %p')} IST\n"
-        f"• Part 2: {s['p2'].strftime('%d %b %I:%M %p')} IST\n"
-        f"• Part 3: {s['p3'].strftime('%d %b %I:%M %p')} IST\n\n"
+        f"• Part 1: {format_time_with_zones(s['p1'])}\n"
+        f"• Part 2: {format_time_with_zones(s['p2'])}\n"
+        f"• Part 3: {format_time_with_zones(s['p3'])}\n\n"
 
         f"⏳ Left: {s['rh']}h {s['rm']}m\n"
-        f"🔁 Reset: {s['reset'].strftime('%d %b %I:%M %p')} IST"
+        f"🔁 Reset: {format_time_with_zones(s['reset'])}"
     )
 
     return text
@@ -233,15 +249,12 @@ def parse_set_time(raw_text):
 
 # ---------------- HANDLER ----------------
 async def handle(update: Update):
-    if not update.effective_user or str(update.effective_user.id) not in OWNER_LIST:
+    if not update.effective_user or not update.effective_chat:
         return
 
-    if not update.effective_chat:
-        return
-
+    user_id = str(update.effective_user.id)
     chat = str(update.effective_chat.id)
-    user = str(update.effective_user.id)
-    key = f"{chat}:{user}"
+    key = f"{chat}:{user_id}"
 
     store, sha = load_data()
     state = store.get(key, {})
@@ -251,6 +264,21 @@ async def handle(update: Update):
 
     text = (update.message.text or "").strip()
     low = text.lower()
+
+    # ========== PUBLIC COMMANDS (Everyone) ==========
+    if low == "/status":
+        if "start_time" not in state:
+            await bot.send_message(int(chat), "❌ No epoch running. Owner needs to start one.")
+            return
+        await dashboard(chat, state)
+        store[key] = state
+        save_data(store, sha)
+        return
+
+    # ========== OWNER-ONLY COMMANDS ==========
+    if user_id not in OWNER_LIST:
+        await bot.send_message(int(chat), "❌ Restricted. Only owner can use this command.")
+        return
 
     if low == "/start":
         await bot.send_message(int(chat), "👋 Welcome")
@@ -280,14 +308,6 @@ async def handle(update: Update):
 
         await bot.send_message(int(chat), f"✅ Set {t.strftime('%I:%M %p')}")
         await dashboard(chat, state)
-        return
-
-    elif low == "/status":
-        if "start_time" not in state:
-            return
-        await dashboard(chat, state)
-        store[key] = state
-        save_data(store, sha)
         return
 
     elif low == "/analysis":
@@ -327,3 +347,4 @@ async def app(scope, receive, send):
 
         await send({"type": "http.response.start", "status": 200})
         await send({"type": "http.response.body", "body": b"ok"})
+        

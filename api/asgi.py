@@ -15,6 +15,7 @@ GITHUB_REPO = os.environ.get("GITHUB_REPO")
 GITHUB_FILE = os.environ.get("GITHUB_FILE", "data.json")
 
 OWNER_IDS = "1837260280"
+TARGET_THREAD_ID = 3
 
 bot = Bot(token=BOT_TOKEN)
 
@@ -68,16 +69,29 @@ def save_data(store, sha):
     urlopen(req)
 
 
+def message_kwargs(forum=False):
+    if forum:
+        return {"message_thread_id": TARGET_THREAD_ID}
+    return {}
+
+
+async def send_text(chat_id, text, forum=False, **kwargs):
+    kw = {}
+    kw.update(message_kwargs(forum))
+    kw.update(kwargs)
+    return await bot.send_message(int(chat_id), text, **kw)
+
+
 # -------- TIMEZONE CONVERSION --------
 def format_time_with_zones(dt_ist):
     """Convert IST datetime to UTC and CEST, return formatted string"""
     utc_dt = dt_ist.astimezone(UTC)
     cest_dt = dt_ist.astimezone(CEST)
-    
+
     ist_str = dt_ist.strftime("%d %b %I:%M %p")
     utc_str = utc_dt.strftime("%I:%M %p")
     cest_str = cest_dt.strftime("%I:%M %p")
-    
+
     return f"{ist_str} IST [UTC: {utc_str} | CEST: {cest_str}]"
 
 
@@ -169,7 +183,7 @@ def check_reset_boundary(state):
         s = stats(state["start_time"])
         state["last_reset_day"] = s["day"]
         return False
-    
+
     s = stats(state["start_time"])
     if s["day"] > state["last_reset_day"]:
         state["last_reset_day"] = s["day"]
@@ -207,7 +221,7 @@ def build(start):
     return text
 
 
-async def dashboard(chat, state):
+async def dashboard(chat, state, forum=False):
     text = build(state["start_time"])
     add_day_record(state, state["start_time"])
 
@@ -217,7 +231,7 @@ async def dashboard(chat, state):
         except:
             pass
 
-    msg = await bot.send_message(int(chat), text)
+    msg = await send_text(chat, text, forum=forum)
     state["msg_id"] = msg.message_id
 
     try:
@@ -273,6 +287,7 @@ async def handle(update: Update):
 
     user_id = str(update.effective_user.id)
     chat = str(update.effective_chat.id)
+    forum = bool(getattr(update.effective_chat, "is_forum", False))
     key = f"{chat}:{user_id}"
 
     store, sha = load_data()
@@ -290,14 +305,14 @@ async def handle(update: Update):
         state = store.get(owner_key, {})
 
         if "start_time" not in state:
-            await bot.send_message(int(chat), "❌ No epoch running. Owner needs to start one.")
+            await send_text(chat, "❌ No epoch running. Owner needs to start one.", forum=forum)
             return
-        
+
         # Check for reset
         if check_reset_boundary(state):
-            await bot.send_message(int(chat), "🎉 Epoch has reset! Starting new day...")
-        
-        await dashboard(chat, state)
+            await send_text(chat, "🎉 Epoch has reset! Starting new day...", forum=forum)
+
+        await dashboard(chat, state, forum=forum)
         store[owner_key] = state
         save_data(store, sha)
         return
@@ -305,8 +320,8 @@ async def handle(update: Update):
     # ========== OWNER-ONLY COMMANDS ==========
     if user_id not in OWNER_LIST:
         # Send helpful message instead of restriction
-        msg = await bot.send_message(int(chat), "💡 Use /status to check the dashboard and see live updates!")
-        
+        msg = await send_text(chat, "💡 Use /status to check the dashboard and see live updates!", forum=forum)
+
         # Delete message after 30 seconds
         async def delete_after_30s():
             await asyncio.sleep(30)
@@ -314,15 +329,15 @@ async def handle(update: Update):
                 await bot.delete_message(chat_id=int(chat), message_id=msg.message_id)
             except:
                 pass
-        
+
         # Create task to delete message
         asyncio.create_task(delete_after_30s())
         return
 
     if low == "/start":
-        await bot.send_message(int(chat), "👋 Welcome")
+        await send_text(chat, "👋 Welcome", forum=forum)
         if "start_time" in state:
-            await dashboard(chat, state)
+            await dashboard(chat, state, forum=forum)
             store[key] = state
             save_data(store, sha)
         return
@@ -331,13 +346,13 @@ async def handle(update: Update):
         state = {"start_time": int(time.time()), "msg_id": None, "days": [], "last_reset_day": 1}
         store[key] = state
         save_data(store, sha)
-        await dashboard(chat, state)
+        await dashboard(chat, state, forum=forum)
         return
 
     elif low.startswith("/set"):
         parsed = parse_set_time(text)
         if not parsed:
-            await bot.send_message(int(chat), "❌ Format: /set 05:30 PM")
+            await send_text(chat, "❌ Format: /set 05:30 PM", forum=forum)
             return
 
         ts, t = parsed
@@ -345,12 +360,12 @@ async def handle(update: Update):
         store[key] = state
         save_data(store, sha)
 
-        await bot.send_message(int(chat), f"✅ Set {t.strftime('%I:%M %p')}")
-        await dashboard(chat, state)
+        await send_text(chat, f"✅ Set {t.strftime('%I:%M %p')}", forum=forum)
+        await dashboard(chat, state, forum=forum)
         return
 
     elif low == "/analysis":
-        await bot.send_message(int(chat), build_analysis(state))
+        await send_text(chat, build_analysis(state), forum=forum)
         return
 
     elif low == "/reset":
@@ -363,7 +378,7 @@ async def handle(update: Update):
                     pass
             del store[key]
             save_data(store, sha)
-        await bot.send_message(int(chat), "🗑️ Reset done")
+        await send_text(chat, "🗑️ Reset done", forum=forum)
         return
 
 

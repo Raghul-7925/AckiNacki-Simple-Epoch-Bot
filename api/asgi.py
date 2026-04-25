@@ -225,21 +225,16 @@ async def dashboard(chat, state, forum=False):
     text = build(state["start_time"])
     add_day_record(state, state["start_time"])
 
+    # Delete previous message if it exists
     if state.get("msg_id"):
         try:
             await bot.delete_message(chat_id=int(chat), message_id=int(state["msg_id"]))
         except:
             pass
 
+    # Send new dashboard message
     msg = await send_text(chat, text, forum=forum)
     state["msg_id"] = msg.message_id
-
-    try:
-        c = await bot.get_chat(int(chat))
-        if c.type != "private":
-            await bot.pin_chat_message(int(chat), msg.message_id, disable_notification=True)
-    except:
-        pass
 
 
 def build_analysis(state):
@@ -302,25 +297,38 @@ async def handle(update: Update):
     # ========== PUBLIC COMMANDS (Everyone) ==========
     if low == "/status":
         owner_key = f"{chat}:{OWNER_LIST[0]}" if OWNER_LIST else key
-        state = store.get(owner_key, {})
+        owner_state = store.get(owner_key, {})
 
-        if "start_time" not in state:
+        if "start_time" not in owner_state:
             await send_text(chat, "❌ No epoch running. Owner needs to start one.", forum=forum)
             return
 
         # Check for reset
-        if check_reset_boundary(state):
+        if check_reset_boundary(owner_state):
             await send_text(chat, "🎉 Epoch has reset! Starting new day...", forum=forum)
 
-        await dashboard(chat, state, forum=forum)
-        store[owner_key] = state
+        # Show loading message
+        loading_msg = await send_text(chat, "⏳ Updating... Dashboard", forum=forum)
+        
+        # Wait a moment for effect
+        await asyncio.sleep(0.5)
+        
+        # Delete loading message
+        try:
+            await bot.delete_message(chat_id=int(chat), message_id=loading_msg.message_id)
+        except:
+            pass
+        
+        # Send dashboard
+        await dashboard(chat, owner_state, forum=forum)
+        store[owner_key] = owner_state
         save_data(store, sha)
         return
 
     # ========== OWNER-ONLY COMMANDS ==========
     if user_id not in OWNER_LIST:
-        # Send helpful message instead of restriction
-        msg = await send_text(chat, "💡 Use /status to check the dashboard and see live updates!", forum=forum)
+        # Only send helper message for commands OTHER than /status
+        msg = await send_text(chat, "💡 Use <code>/status</code> to check the dashboard and see live updates!", forum=forum, parse_mode="HTML")
 
         # Delete message after 30 seconds
         async def delete_after_30s():

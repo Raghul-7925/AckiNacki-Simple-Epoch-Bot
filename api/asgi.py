@@ -1,263 +1,179 @@
-import base64
-import json
-import time
-import os
+import base64, json, os
 from datetime import datetime, timedelta, timezone
 from urllib.request import Request, urlopen
-
-from telegram import Bot, Update, ReplyKeyboardMarkup, InlineKeyboardMarkup, InlineKeyboardButton
+from telegram import Bot, Update, ReplyKeyboardMarkup
 
 BOT_TOKEN = os.environ.get("BOT_TOKEN")
 GITHUB_TOKEN = os.environ.get("GITHUB_TOKEN")
 GITHUB_REPO = os.environ.get("GITHUB_REPO")
-GITHUB_FILE = os.environ.get("GITHUB_FILE", "data.json")
+GITHUB_FILE = "data.json"
 
 bot = Bot(token=BOT_TOKEN)
 
-IST = timezone(timedelta(hours=5, minutes=30))
-
-EPOCH_SECONDS = 330
-TOTAL_EPOCHS = 288
-
-DAILY_TAP_LIMIT = 12000
-TAPS_PER_EPOCH = 70
-DAILY_USABLE_EPOCHS = DAILY_TAP_LIMIT // TAPS_PER_EPOCH
-
 BLOCKS_PER_EPOCH = 262000
 
-
-# ---------------- GITHUB ----------------
-GITHUB_API = f"https://api.github.com/repos/{GITHUB_REPO}/contents/{GITHUB_FILE}"
+# ---------- GITHUB ----------
+API = f"https://api.github.com/repos/{GITHUB_REPO}/contents/{GITHUB_FILE}"
 
 def gh_headers():
-    return {
-        "Authorization": f"Bearer {GITHUB_TOKEN}",
-        "Accept": "application/vnd.github+json",
-    }
+    return {"Authorization": f"Bearer {GITHUB_TOKEN}"}
 
-def load_data():
+def load():
     try:
-        req = Request(GITHUB_API)
-        for k, v in gh_headers().items():
-            req.add_header(k, v)
-        res = urlopen(req).read()
-        data = json.loads(res)
-        content = base64.b64decode(data["content"]).decode()
-        return json.loads(content), data["sha"]
+        req = Request(API)
+        for k,v in gh_headers().items(): req.add_header(k,v)
+        res = json.loads(urlopen(req).read())
+        return json.loads(base64.b64decode(res["content"]).decode()), res["sha"]
     except:
         return {}, None
 
-def save_data(store, sha):
+def save(data, sha):
     body = {
-        "message": "update",
-        "content": base64.b64encode(json.dumps(store).encode()).decode(),
-        "branch": "main"
+        "message":"update",
+        "content": base64.b64encode(json.dumps(data).encode()).decode()
     }
-    if sha:
-        body["sha"] = sha
-
-    req = Request(GITHUB_API, data=json.dumps(body).encode(), method="PUT")
-    for k, v in gh_headers().items():
-        req.add_header(k, v)
-    req.add_header("Content-Type", "application/json")
+    if sha: body["sha"]=sha
+    req = Request(API, data=json.dumps(body).encode(), method="PUT")
+    for k,v in gh_headers().items(): req.add_header(k,v)
+    req.add_header("Content-Type","application/json")
     urlopen(req)
 
-
-# ---------------- BLOCK FETCH ----------------
-def get_block_height():
+# ---------- BLOCK ----------
+def get_block():
     url = "https://mainnet.ackinacki.org/graphql"
 
     payload = json.dumps({
-        "query": """
-        query GetBlocks($limit: Int!) {
-          blockchain {
-            blocks(last: $limit) {
-              nodes {
-                seq_no
-              }
-            }
-          }
-        }
-        """,
-        "variables": {"limit": 1}
+        "query": "{ blockchain { blocks(last:1){ nodes{ seq_no }}}}"
     }).encode()
 
-    req = Request(url, data=payload, headers={"Content-Type": "application/json"}, method="POST")
+    req = Request(url, data=payload, headers={"Content-Type":"application/json"}, method="POST")
+    res = json.loads(urlopen(req).read())
 
-    with urlopen(req, timeout=10) as res:
-        data = json.loads(res.read().decode())
+    return res["data"]["blockchain"]["blocks"]["nodes"][0]["seq_no"]
 
-    return data["data"]["blockchain"]["blocks"]["nodes"][0]["seq_no"]
+# ---------- CALC ----------
+def calc(start_block):
+    current = get_block()
 
+    passed = current - start_block
+    cycle = passed % BLOCKS_PER_EPOCH
+    remaining = BLOCKS_PER_EPOCH - cycle
 
-def block_epoch(state):
-    try:
-        if "start_block" not in state:
-            return None
+    percent = (cycle / BLOCKS_PER_EPOCH) * 100
 
-        current_block = get_block_height()
-        start_block = state["start_block"]
+    return current, cycle, remaining, percent
 
-        passed = current_block - start_block
+# ---------- TIME ----------
+def estimate_time(remaining):
+    BLOCK_TIME = 0.34  # avg seconds per block
+    seconds = int(remaining * BLOCK_TIME)
+    return datetime.utcnow() + timedelta(seconds=seconds)
 
-        epoch = (passed // BLOCKS_PER_EPOCH) + 1
-        epoch = max(1, min(epoch, TOTAL_EPOCHS))
+def format_times(dt):
+    utc = dt.replace(tzinfo=timezone.utc)
+    ist = utc.astimezone(timezone(timedelta(hours=5, minutes=30)))
+    cest = utc.astimezone(timezone(timedelta(hours=2)))
 
-        remaining = BLOCKS_PER_EPOCH - (passed % BLOCKS_PER_EPOCH)
+    return utc, ist, cest
 
-        return {
-            "block": current_block,
-            "epoch": epoch,
-            "remaining": remaining
-        }
-
-    except Exception as e:
-        print("Block error:", e)
-        return None
-
-
-# ---------------- UI ----------------
+# ---------- MENU ----------
 def menu():
     return ReplyKeyboardMarkup(
-        [["▶️ Start Epoch", "📊 Status"],
-         ["🕒 Set Time", "🔄 Reset"]],
+        [["/status","/live"],["/setblock","/reset"]],
         resize_keyboard=True
     )
 
-
-# ---------------- TIME LOGIC ----------------
-def stats(start):
-    now = int(time.time())
-    elapsed = now - start
-
-    epoch = min((elapsed // EPOCH_SECONDS) + 1, TOTAL_EPOCHS)
-
-    taps_done = min(epoch, DAILY_USABLE_EPOCHS) * TAPS_PER_EPOCH
-    taps_left = max(DAILY_TAP_LIMIT - taps_done, 0)
-
-    h = elapsed // 3600
-    m = (elapsed % 3600) // 60
-
-    return {
-        "epoch": epoch,
-        "h": h,
-        "m": m,
-        "taps_done": taps_done,
-        "taps_left": taps_left,
-        "usable": min(epoch, DAILY_USABLE_EPOCHS)
-    }
-
-
-# ---------------- DASHBOARD ----------------
-def build(start, state):
-    s = stats(start)
-    b = block_epoch(state)
-
-    block_text = ""
-    if b:
-        block_text = (
-            f"🔗 Block: {b['block']}\n"
-            f"🧮 Chain Epoch: {b['epoch']}/288\n"
-            f"📉 Blocks left: {b['remaining']:,}\n"
-            f"📌 Start Block: {state.get('start_block')}\n\n"
-        )
-
-    return (
-        f"📊 Live Dashboard\n\n"
-        f"{block_text}"
-        f"⏱️ {s['h']}h {s['m']}m\n"
-        f"🔢 Epoch (Time): {s['epoch']}/288\n\n"
-        f"🪙 Daily\n"
-        f"• Epochs: {s['usable']}/172\n"
-        f"• Taps: {s['taps_done']:,}/12,000\n\n"
-        f"📊 Taps\n"
-        f"• Done: {s['taps_done']:,}\n"
-        f"• Left: {s['taps_left']:,}"
-    )
-
-
-async def dashboard(chat, state):
-    text = build(state["start_time"], state)
-
-    if state.get("msg_id"):
-        try:
-            await bot.edit_message_text(chat_id=int(chat), message_id=int(state["msg_id"]), text=text, reply_markup=menu())
-            return
-        except:
-            pass
-
-    msg = await bot.send_message(int(chat), text, reply_markup=menu())
-    state["msg_id"] = msg.message_id
-
-
-# ---------------- HANDLER ----------------
+# ---------- HANDLER ----------
 async def handle(update: Update):
     chat = str(update.effective_chat.id)
     user = str(update.effective_user.id)
     key = f"{chat}:{user}"
 
-    store, sha = load_data()
+    store, sha = load()
     state = store.get(key, {})
 
-    if not update.message:
-        return
+    text = (update.message.text or "").lower()
 
-    text = update.message.text.strip()
-    low = text.lower()
-
-    if low in ["▶️ start epoch", "/start"]:
-        state = {"start_time": int(time.time()), "msg_id": None}
-        store[key] = state
-        save_data(store, sha)
-        await dashboard(chat, state)
-
-    elif low == "📊 status":
-        if "start_time" not in state:
-            await bot.send_message(int(chat), "❌ Start first", reply_markup=menu())
-            return
-        await dashboard(chat, state)
-
-    elif low.startswith("/setblock"):
+    # SET BLOCK
+    if text.startswith("/setblock"):
         try:
-            block = int(text.split()[1])
+            block = int(update.message.text.split()[1])
             state["start_block"] = block
 
             store[key] = state
-            save_data(store, sha)
+            save(store, sha)
 
-            await bot.send_message(int(chat), f"✅ Start block set: {block}")
-            await dashboard(chat, state)
-
+            await bot.send_message(int(chat), f"✅ Reset block set: {block:,}")
         except:
             await bot.send_message(int(chat), "❌ Use: /setblock 52662000")
 
-    elif low == "🔄 reset":
+    # STATUS
+    elif text == "/status":
+        if "start_block" not in state:
+            await bot.send_message(int(chat), "❌ Set block first using /setblock")
+            return
+
+        current, cycle, remaining, percent = calc(state["start_block"])
+
+        reset_time = estimate_time(remaining)
+        utc, ist, cest = format_times(reset_time)
+
+        msg = (
+            f"📊 Live Chain Status\n\n"
+            f"🔗 Current Block: {current:,}\n\n"
+
+            f"📈 Progress\n"
+            f"• Done: {cycle:,} / 262,000\n"
+            f"• Remaining: {remaining:,}\n"
+            f"• Progress: {percent:.2f}%\n\n"
+
+            f"⏳ Reset Time\n"
+            f"• UTC : {utc.strftime('%d %b %H:%M')}\n"
+            f"• IST : {ist.strftime('%d %b %I:%M %p')}\n"
+            f"• CEST: {cest.strftime('%d %b %H:%M')}"
+        )
+
+        await bot.send_message(int(chat), msg)
+
+    # LIVE
+    elif text == "/live":
+        if "start_block" not in state:
+            await bot.send_message(int(chat), "❌ Set block first")
+            return
+
+        current, cycle, remaining, percent = calc(state["start_block"])
+
+        await bot.send_message(
+            int(chat),
+            f"🔴 LIVE\nBlock: {current:,}\nRemaining: {remaining:,}\n{percent:.2f}% done"
+        )
+
+    # RESET
+    elif text == "/reset":
         if key in store:
             del store[key]
-            save_data(store, sha)
+            save(store, sha)
 
-        await bot.send_message(int(chat), "🗑️ Reset done", reply_markup=menu())
+        await bot.send_message(int(chat), "🗑️ Reset done")
 
     else:
         await bot.send_message(int(chat), "👇 Use menu", reply_markup=menu())
 
-
-# ---------------- ENTRY ----------------
+# ---------- ENTRY ----------
 async def app(scope, receive, send):
     if scope["type"] == "http":
-        body = b""
-        more = True
+        body=b""
+        more=True
         while more:
-            m = await receive()
-            body += m.get("body", b"")
-            more = m.get("more_body", False)
+            m=await receive()
+            body+=m.get("body",b"")
+            more=m.get("more_body",False)
 
         try:
-            data = json.loads(body.decode())
-            update = Update.de_json(data, bot)
+            update=Update.de_json(json.loads(body.decode()), bot)
             await handle(update)
         except Exception as e:
             print(e)
 
-        await send({"type": "http.response.start", "status": 200})
-        await send({"type": "http.response.body", "body": b"ok"})
+        await send({"type":"http.response.start","status":200})
+        await send({"type":"http.response.body","body":b"ok"})

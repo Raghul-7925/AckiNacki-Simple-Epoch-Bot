@@ -208,7 +208,6 @@ def format_duration(seconds):
 
 def calculate_epoch_stats(state, current_block):
     start_block = int(state.get("start_block", EPOCH_RESET_BLOCK))
-    epoch_start_ts = int(state.get("epoch_start_ts", int(datetime.now(IST).timestamp())))
 
     if current_block < start_block:
         blocks_since_reset = 0
@@ -223,17 +222,9 @@ def calculate_epoch_stats(state, current_block):
     blocks_until_reset = next_reset_block - current_block
     progress_percent = (blocks_in_current_epoch / BLOCKS_PER_EPOCH) * 100
 
-    now_ts = int(datetime.now(IST).timestamp())
-    elapsed_real_seconds = max(0, now_ts - epoch_start_ts)
-
-    if blocks_in_current_epoch > 0:
-        dynamic_block_time = elapsed_real_seconds / blocks_in_current_epoch
-        dynamic_block_time = clamp(dynamic_block_time, MIN_BLOCK_TIME, MAX_BLOCK_TIME)
-    else:
-        dynamic_block_time = AVG_RESET_BLOCK_TIME
-
-    estimated_reset_seconds = max(0, blocks_until_reset) * AVG_RESET_BLOCK_TIME
-    time_left_seconds = max(0, blocks_until_reset) * dynamic_block_time
+    elapsed_seconds = blocks_in_current_epoch * AVG_RESET_BLOCK_TIME
+    time_left_seconds = max(0, blocks_until_reset) * AVG_RESET_BLOCK_TIME
+    estimated_reset_seconds = time_left_seconds
 
     reset_time = datetime.now(IST) + timedelta(seconds=estimated_reset_seconds)
 
@@ -250,14 +241,10 @@ def calculate_epoch_stats(state, current_block):
         tier_blocks_progress = blocks_in_current_epoch - TIER_2_END
         tier_total_blocks = BLOCKS_PER_EPOCH - TIER_2_END
 
-    tier_1_start_timestamp = epoch_start_ts
-    tier_1_start_time = datetime.fromtimestamp(tier_1_start_timestamp, IST)
-
-    tier_2_start_timestamp = tier_1_start_timestamp + int(TIER_1_END * dynamic_block_time)
-    tier_2_start_time = datetime.fromtimestamp(tier_2_start_timestamp, IST)
-
-    tier_3_start_timestamp = tier_1_start_timestamp + int(TIER_2_END * dynamic_block_time)
-    tier_3_start_time = datetime.fromtimestamp(tier_3_start_timestamp, IST)
+    now_ist = datetime.now(IST)
+    tier_1_start_time = now_ist - timedelta(seconds=elapsed_seconds)
+    tier_2_start_time = tier_1_start_time + timedelta(seconds=TIER_1_END * AVG_RESET_BLOCK_TIME)
+    tier_3_start_time = tier_1_start_time + timedelta(seconds=TIER_2_END * AVG_RESET_BLOCK_TIME)
 
     return {
         "current_block": current_block,
@@ -274,8 +261,7 @@ def calculate_epoch_stats(state, current_block):
         "tier_1_start_time": tier_1_start_time,
         "tier_2_start_time": tier_2_start_time,
         "tier_3_start_time": tier_3_start_time,
-        "elapsed_real_seconds": elapsed_real_seconds,
-        "dynamic_block_time": dynamic_block_time,
+        "elapsed_seconds": elapsed_seconds,
         "time_left_seconds": time_left_seconds,
         "estimated_reset_seconds": estimated_reset_seconds,
     }
@@ -284,8 +270,7 @@ def calculate_epoch_stats(state, current_block):
 async def build_dashboard(state, current_block):
     stats = calculate_epoch_stats(state, current_block)
 
-    elapsed_seconds = stats["elapsed_real_seconds"]
-    timer_text = format_duration(elapsed_seconds)
+    timer_text = format_duration(stats["elapsed_seconds"])
     rest_text = format_duration(stats["time_left_seconds"])
 
     text = (
@@ -406,7 +391,7 @@ async def handle(update: Update):
             await send_text(chat, "⚠️ Unable to fetch current block height.", forum=forum)
             return
 
-        changed = sync_epoch_state(state, current_block)
+        sync_epoch_state(state, current_block)
         await send_dashboard(chat, state, current_block, forum=forum)
         store[key] = state
         save_data(store, sha)

@@ -23,7 +23,7 @@ UTC = timezone.utc
 
 BLOCKS_PER_EPOCH = 262_000
 EPOCH_RESET_BLOCK = 52_662_000
-AVG_BLOCK_TIME = 0.30
+AVG_BLOCK_TIME = 0.35
 
 TIER_1_END = BLOCKS_PER_EPOCH // 3
 TIER_2_END = (BLOCKS_PER_EPOCH * 2) // 3
@@ -253,7 +253,7 @@ async def build_dashboard(state, current_block):
 
         f"📊 Block Progress\n"
         f"• Current Block Height: {s['current']:,}\n"
-        f"• Epoch {s['epoch_no'] + 1} Reset at: {s['next']:,}\n"
+        f"• Epoch {s['epoch_no']} Reset at: {s['next']:,}\n"
         f"• Blocks produced today: {s['produced']:,}\n"
         f"• Blocks Left to Reset: {s['left']:,}\n"
         f"• Progress: {(s['in_epoch'] / BLOCKS_PER_EPOCH) * 100:.1f}%\n\n"

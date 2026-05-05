@@ -359,7 +359,7 @@ async def handle(update: Update):
 
     if low in ["/status", "📊 status"]:
         loading_msg = await send_text(chat, "⏳ Updating.....", forum=forum)
-        await asyncio.sleep(2)
+        await asyncio.sleep(1)
         try:
             await bot.delete_message(chat_id=int(chat), message_id=loading_msg.message_id)
         except:

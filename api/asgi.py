@@ -6,7 +6,7 @@ import aiohttp
 from datetime import datetime, timedelta, timezone
 from urllib.request import Request, urlopen
 
-from telegram import Bot, Update
+from telegram import Bot, Update, ReplyKeyboardRemove
 
 BOT_TOKEN = os.environ.get("BOT_TOKEN")
 GITHUB_TOKEN = os.environ.get("GITHUB_TOKEN")
@@ -23,7 +23,7 @@ UTC = timezone.utc
 
 BLOCKS_PER_EPOCH = 262_000
 EPOCH_RESET_BLOCK = 52_662_000
-AVG_BLOCK_TIME = 0.35
+AVG_BLOCK_TIME = 0.30
 
 TIER_1_END = BLOCKS_PER_EPOCH // 3
 TIER_2_END = (BLOCKS_PER_EPOCH * 2) // 3
@@ -76,7 +76,7 @@ def save_data(store, sha):
 
 
 async def send_text(chat_id, text, forum=False):
-    kw = {}
+    kw = {"reply_markup": ReplyKeyboardRemove()}
     if forum:
         kw["message_thread_id"] = TARGET_THREAD_ID
     return await bot.send_message(int(chat_id), text, **kw)
@@ -94,7 +94,6 @@ async def fetch_block_height(url):
         }
     }
     """
-
     payload = {"query": query, "variables": {"limit": 1}}
 
     try:
@@ -254,7 +253,7 @@ async def build_dashboard(state, current_block):
 
         f"📊 Block Progress\n"
         f"• Current Block Height: {s['current']:,}\n"
-        f"• Epoch {s['epoch_no']} Reset at: {s['next']:,}\n"
+        f"• Epoch {s['epoch_no'] + 1} Reset at: {s['next']:,}\n"
         f"• Blocks produced today: {s['produced']:,}\n"
         f"• Blocks Left to Reset: {s['left']:,}\n"
         f"• Progress: {(s['in_epoch'] / BLOCKS_PER_EPOCH) * 100:.1f}%\n\n"
@@ -287,6 +286,7 @@ async def update_pin_message(chat, state, time_left_text):
             chat_id=int(chat),
             message_id=int(pin_id),
             text=f"⏳ Time to next epoch: {time_left_text}",
+            reply_markup=ReplyKeyboardRemove(),
         )
     except:
         pass
@@ -387,13 +387,10 @@ async def handle(update: Update):
     if low in ["/help", "ℹ️ help"]:
         help_text = (
             "🧭 Bot Commands\n\n"
-            "🔄 /start - refresh, update, ping\n"
-            "📊 /status - update the dashboard\n"
-            "🔺 /blocks - show current block height\n"
-            "📈 /analysis - show reports\n"
-            "⚙️ /setblock <height> - set epoch start\n"
-            "📌 /pin - send one single updating message\n"
-            "ℹ️ /help - show this help"
+            "📊 /status - Update The Dashboard\n"
+            "📦 /blocks - Show Current Block Height\n"
+            "📈 /analysis - Show Reports\n"
+            "ℹ️ /help - Show This Help"
         )
         await send_text(chat, help_text, forum=forum)
         return

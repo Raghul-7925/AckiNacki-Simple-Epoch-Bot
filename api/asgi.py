@@ -25,9 +25,7 @@ CEST = timezone(timedelta(hours=2))
 
 BLOCKS_PER_EPOCH = 262_000
 EPOCH_RESET_BLOCK = 52_662_000
-AVG_RESET_BLOCK_TIME = 0.30
-MIN_BLOCK_TIME = 0.30
-MAX_BLOCK_TIME = 0.40
+AVG_BLOCK_TIME = 0.35
 
 TIER_1_END = BLOCKS_PER_EPOCH // 3
 TIER_2_END = (BLOCKS_PER_EPOCH * 2) // 3
@@ -102,10 +100,7 @@ async def fetch_block_height(url):
     }
     """
 
-    payload = {
-        "query": query,
-        "variables": {"limit": 1}
-    }
+    payload = {"query": query, "variables": {"limit": 1}}
 
     try:
         timeout = aiohttp.ClientTimeout(total=10)
@@ -117,7 +112,7 @@ async def fetch_block_height(url):
                     if blocks:
                         return int(blocks[0]["seq_no"])
     except:
-        return None
+        pass
 
     return None
 
@@ -133,9 +128,6 @@ def ensure_state_defaults(state):
     changed = False
     if "start_block" not in state:
         state["start_block"] = EPOCH_RESET_BLOCK
-        changed = True
-    if "epoch_start_ts" not in state:
-        state["epoch_start_ts"] = int(datetime.now(IST).timestamp())
         changed = True
     if "history" not in state or not isinstance(state["history"], list):
         state["history"] = []
@@ -164,23 +156,17 @@ def sync_epoch_state(state, current_block):
             "kind": "auto_reset",
             "date": now_ist.strftime("%d %b %Y"),
             "reset_block": reset_block,
-            "current_block": current_block,
+            "epoch_start_block": start_block,
             "recorded_ist": now_ist.strftime("%I:%M %p"),
             "recorded_utc": now_ist.astimezone(UTC).strftime("%I:%M %p"),
-            "epoch_start_block": start_block,
+            "recorded_cest": now_ist.astimezone(CEST).strftime("%I:%M %p"),
         })
 
         state["start_block"] = reset_block
-        state["epoch_start_ts"] = int(now_ist.timestamp())
         state["last_auto_reset_block"] = reset_block
-        state["last_auto_reset_recorded_at"] = now_ist.isoformat()
         changed = True
 
     return changed
-
-
-def clamp(v, a, b):
-    return max(a, min(b, v))
 
 
 def format_time_with_zones(dt_ist):
@@ -222,11 +208,10 @@ def calculate_epoch_stats(state, current_block):
     blocks_until_reset = next_reset_block - current_block
     progress_percent = (blocks_in_current_epoch / BLOCKS_PER_EPOCH) * 100
 
-    elapsed_seconds = blocks_in_current_epoch * AVG_RESET_BLOCK_TIME
-    time_left_seconds = max(0, blocks_until_reset) * AVG_RESET_BLOCK_TIME
-    estimated_reset_seconds = time_left_seconds
+    elapsed_seconds = blocks_in_current_epoch * AVG_BLOCK_TIME
+    time_left_seconds = max(0, blocks_until_reset) * AVG_BLOCK_TIME
 
-    reset_time = datetime.now(IST) + timedelta(seconds=estimated_reset_seconds)
+    reset_time = datetime.now(IST) + timedelta(seconds=time_left_seconds)
 
     if blocks_in_current_epoch <= TIER_1_END:
         current_tier = "Tier 1 (High reward)"
@@ -243,12 +228,11 @@ def calculate_epoch_stats(state, current_block):
 
     now_ist = datetime.now(IST)
     tier_1_start_time = now_ist - timedelta(seconds=elapsed_seconds)
-    tier_2_start_time = tier_1_start_time + timedelta(seconds=TIER_1_END * AVG_RESET_BLOCK_TIME)
-    tier_3_start_time = tier_1_start_time + timedelta(seconds=TIER_2_END * AVG_RESET_BLOCK_TIME)
+    tier_2_start_time = tier_1_start_time + timedelta(seconds=TIER_1_END * AVG_BLOCK_TIME)
+    tier_3_start_time = tier_1_start_time + timedelta(seconds=TIER_2_END * AVG_BLOCK_TIME)
 
     return {
         "current_block": current_block,
-        "blocks_since_reset": blocks_since_reset,
         "blocks_in_current_epoch": blocks_in_current_epoch,
         "current_epoch": current_epoch,
         "next_reset_block": next_reset_block,
@@ -263,7 +247,6 @@ def calculate_epoch_stats(state, current_block):
         "tier_3_start_time": tier_3_start_time,
         "elapsed_seconds": elapsed_seconds,
         "time_left_seconds": time_left_seconds,
-        "estimated_reset_seconds": estimated_reset_seconds,
     }
 
 
@@ -275,7 +258,7 @@ async def build_dashboard(state, current_block):
 
     text = (
         f"⏳ Timer Since Epoch Reset: {timer_text}\n"
-        f"⏱️ Time left to rest : {rest_text}\n\n"
+        f"⏱️ Time left to rest: {rest_text}\n\n"
 
         f"📊 Block Progress\n"
         f"• Current Block Height: {stats['current_block']:,}\n"
@@ -328,10 +311,11 @@ def record_manual_set(state, entered_block, current_block, start_block, reset_bl
         "date": now_ist.strftime("%d %b %Y"),
         "entered_block": entered_block,
         "current_block": current_block,
-        "start_block": start_block,
+        "epoch_start_block": start_block,
         "reset_block": reset_block,
         "recorded_ist": now_ist.strftime("%I:%M %p"),
         "recorded_utc": now_ist.astimezone(UTC).strftime("%I:%M %p"),
+        "recorded_cest": now_ist.astimezone(CEST).strftime("%I:%M %p"),
     })
 
 
@@ -423,7 +407,7 @@ async def handle(update: Update):
 
         current_block = await get_current_block_height()
         if current_block is None:
-            await send_text(chat, "⚠️ Unable to fetch current block height. Try again.", forum=forum)
+            await send_text(chat, "⚠️ Unable to fetch current block height.", forum=forum)
             return
 
         now_ist = datetime.now(IST)
@@ -431,75 +415,68 @@ async def handle(update: Update):
         if entered_block > current_block:
             start_block = entered_block - BLOCKS_PER_EPOCH
             reset_block = entered_block
-            mode = "future reset block"
         else:
             start_block = entered_block
             reset_block = entered_block + BLOCKS_PER_EPOCH
-            mode = "previous day reset block"
 
         state["start_block"] = start_block
-        state["epoch_start_ts"] = int(now_ist.timestamp())
-        state["reset_block"] = reset_block
-        state["last_set_block"] = entered_block
-        state["last_set_mode"] = mode
-        state["last_current_block"] = current_block
 
         record_manual_set(state, entered_block, current_block, start_block, reset_block, now_ist)
 
         store[key] = state
         save_data(store, sha)
 
-        await send_text(
-            chat,
-            (
-                f"✅ Block stored\n"
-                f"• Current block: {current_block:,}\n"
-                f"• Entered block: {entered_block:,}\n"
-                f"• Mode: {mode}\n"
-                f"• Epoch start block: {start_block:,}\n"
-                f"• Reset block: {reset_block:,}"
-            ),
-            forum=forum,
-        )
+        await send_text(chat, f"✅ Epoch start block set to: {entered_block:,}", forum=forum)
+
+        loading_msg = await send_text(chat, "⏳ Loading dashboard...", forum=forum)
+        await asyncio.sleep(0.5)
+        try:
+            await bot.delete_message(chat_id=int(chat), message_id=loading_msg.message_id)
+        except:
+            pass
+
+        await send_dashboard(chat, state, current_block, forum=forum)
+        store[key] = state
+        save_data(store, sha)
         return
 
     if low == "/analysis":
+        if user_id not in OWNER_LIST:
+            await send_text(chat, "❌ You are not allowed to use /analysis.", forum=forum)
+            return
+
         current_block = await get_current_block_height()
         if current_block is None:
             await send_text(chat, "⚠️ Unable to fetch current block height.", forum=forum)
             return
 
-        changed = sync_epoch_state(state, current_block)
-        if changed:
-            store[key] = state
-            save_data(store, sha)
+        sync_epoch_state(state, current_block)
 
         hist = state.get("history", [])
         if not hist:
-            await send_text(chat, "No data", forum=forum)
+            await send_text(chat, "📊 No epoch records yet.", forum=forum)
             return
 
-        out = "📊 Epoch History\n\n"
-        for h in hist[-20:]:
+        out = "📊 Daily Epoch History\n\n"
+        for h in hist[-30:]:
             kind = h.get("kind", "manual_set")
             if kind == "auto_reset":
                 out += (
-                    f"{h['date']} | auto reset\n"
-                    f"Reset block: {h['reset_block']:,}\n"
-                    f"Current block: {h['current_block']:,}\n"
-                    f"Recorded IST: {h['recorded_ist']} | UTC: {h['recorded_utc']}\n"
-                    f"Epoch start block: {h['epoch_start_block']:,}\n\n"
+                    f"📅 {h['date']} | Auto Reset\n"
+                    f"• Epoch Start Block: {h['epoch_start_block']:,}\n"
+                    f"• Reset Block: {h['reset_block']:,}\n"
+                    f"• IST: {h['recorded_ist']} | UTC: {h['recorded_utc']} | CEST: {h['recorded_cest']}\n\n"
                 )
             else:
                 out += (
-                    f"{h['date']} | manual set\n"
-                    f"Entered block: {h['entered_block']:,}\n"
-                    f"Current block: {h['current_block']:,}\n"
-                    f"Epoch start block: {h['start_block']:,}\n"
-                    f"Reset block: {h['reset_block']:,}\n"
-                    f"Recorded IST: {h['recorded_ist']} | UTC: {h['recorded_utc']}\n\n"
+                    f"📅 {h['date']} | Manual Set\n"
+                    f"• Epoch Start Block: {h['epoch_start_block']:,}\n"
+                    f"• Reset Block: {h['reset_block']:,}\n"
+                    f"• IST: {h['recorded_ist']} | UTC: {h['recorded_utc']} | CEST: {h['recorded_cest']}\n\n"
                 )
 
+        store[key] = state
+        save_data(store, sha)
         await send_text(chat, out, forum=forum)
         return
 
@@ -522,3 +499,4 @@ async def app(scope, receive, send):
 
         await send({"type": "http.response.start", "status": 200})
         await send({"type": "http.response.body", "body": b"ok"})
+    

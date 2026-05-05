@@ -7,7 +7,7 @@ import aiohttp
 from datetime import datetime, timedelta, timezone
 from urllib.request import Request, urlopen
 
-from telegram import Bot, Update, ReplyKeyboardRemove
+from telegram import Bot, Update, ReplyKeyboardMarkup
 
 BOT_TOKEN = os.environ.get("BOT_TOKEN")
 GITHUB_TOKEN = os.environ.get("GITHUB_TOKEN")
@@ -36,6 +36,15 @@ GRAPHQL_URL_PRIMARY = "https://mainnet.ackinacki.org/graphql"
 GRAPHQL_URL_FALLBACK = "https://mainnet-cf.ackinacki.org/graphql"
 
 GITHUB_API = f"https://api.github.com/repos/{GITHUB_REPO}/contents/{GITHUB_FILE}"
+
+KEYBOARD = ReplyKeyboardMarkup(
+    [
+        ["📊 Status", "📦 Block"],
+        ["⚙️ Set Block", "📈 Analysis"],
+        ["🔄 Refresh"],
+    ],
+    resize_keyboard=True,
+)
 
 
 def gh_headers():
@@ -80,11 +89,12 @@ def message_kwargs(forum=False):
     return {}
 
 
-async def send_text(chat_id, text, forum=False, **kwargs):
+async def send_text(chat_id, text, forum=False, show_keyboard=True, **kwargs):
     kw = {}
     kw.update(message_kwargs(forum))
     kw.update(kwargs)
-    kw["reply_markup"] = ReplyKeyboardRemove()
+    if show_keyboard:
+        kw["reply_markup"] = KEYBOARD
     return await bot.send_message(int(chat_id), text, **kw)
 
 
@@ -339,7 +349,7 @@ async def handle(update: Update):
     text = (update.message.text or "").strip()
     low = text.lower()
 
-    if low == "/start":
+    if low in ["/start", "🔄 refresh"]:
         current_block = await get_current_block_height()
         if current_block is None:
             await send_text(chat, "⚠️ Unable to fetch current block height.", forum=forum)
@@ -351,7 +361,7 @@ async def handle(update: Update):
             await send_text(chat, "👋 Welcome to Epoch Helper Bot!", forum=forum)
             state["seen_start"] = True
 
-        loading_msg = await send_text(chat, "⏳ Updating dashboard...", forum=forum)
+        loading_msg = await send_text(chat, "⏳ Updating dashboard...", forum=forum, show_keyboard=False)
         await asyncio.sleep(0.5)
         try:
             await bot.delete_message(chat_id=int(chat), message_id=loading_msg.message_id)
@@ -363,8 +373,8 @@ async def handle(update: Update):
         save_data(store, sha)
         return
 
-    if low == "/status":
-        loading_msg = await send_text(chat, "⏳ Updating dashboard...", forum=forum)
+    if low in ["/status", "📊 status"]:
+        loading_msg = await send_text(chat, "⏳ Updating dashboard...", forum=forum, show_keyboard=False)
         await asyncio.sleep(0.5)
         try:
             await bot.delete_message(chat_id=int(chat), message_id=loading_msg.message_id)
@@ -382,7 +392,7 @@ async def handle(update: Update):
         save_data(store, sha)
         return
 
-    if low == "/block":
+    if low in ["/block", "📦 block"]:
         b = await get_current_block_height()
         if b is None:
             await send_text(chat, "⚠️ Unable to fetch current block height.", forum=forum)
@@ -390,7 +400,7 @@ async def handle(update: Update):
             await send_text(chat, f"📦 Current Block: {b:,}", forum=forum)
         return
 
-    if low.startswith("/setblock"):
+    if low.startswith("/setblock") or low.startswith("⚙️ set block"):
         if user_id not in OWNER_LIST:
             await send_text(chat, "❌ You are not allowed to use /setblock.", forum=forum)
             return
@@ -429,7 +439,7 @@ async def handle(update: Update):
 
         await send_text(chat, f"✅ Epoch start block set to: {entered_block:,}", forum=forum)
 
-        loading_msg = await send_text(chat, "⏳ Loading dashboard...", forum=forum)
+        loading_msg = await send_text(chat, "⏳ Loading dashboard...", forum=forum, show_keyboard=False)
         await asyncio.sleep(0.5)
         try:
             await bot.delete_message(chat_id=int(chat), message_id=loading_msg.message_id)
@@ -441,7 +451,7 @@ async def handle(update: Update):
         save_data(store, sha)
         return
 
-    if low == "/analysis":
+    if low in ["/analysis", "📈 analysis"]:
         if user_id not in OWNER_LIST:
             await send_text(chat, "❌ You are not allowed to use /analysis.", forum=forum)
             return
@@ -500,4 +510,3 @@ async def app(scope, receive, send):
 
         await send({"type": "http.response.start", "status": 200})
         await send({"type": "http.response.body", "body": b"ok"})
-        

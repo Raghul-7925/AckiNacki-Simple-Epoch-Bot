@@ -1,6 +1,5 @@
 import base64
 import json
-import time
 import os
 import asyncio
 import aiohttp
@@ -15,8 +14,6 @@ GITHUB_REPO = os.environ.get("GITHUB_REPO")
 GITHUB_FILE = os.environ.get("GITHUB_FILE", "data.json")
 
 OWNER_IDS = "1837260280"
-TARGET_THREAD_ID = 3
-
 bot = Bot(token=BOT_TOKEN)
 
 IST = timezone(timedelta(hours=5, minutes=30))
@@ -36,10 +33,9 @@ GRAPHQL_URL_FALLBACK = "https://mainnet-cf.ackinacki.org/graphql"
 
 GITHUB_API = f"https://api.github.com/repos/{GITHUB_REPO}/contents/{GITHUB_FILE}"
 
-# ✅ Updated Keyboard
 KEYBOARD = ReplyKeyboardMarkup(
     [
-        ["📊 Status", "📦 Block Height"],
+        ["📊 Status", "🔺 Block Height"],
         ["⚙️ Set Block", "📈 Analysis"],
         ["ℹ️ Help"],
     ],
@@ -99,118 +95,123 @@ async def fetch_block_height(url):
     payload = {"query": query, "variables": {"limit": 1}}
 
     try:
-        timeout = aiohttp.ClientTimeout(total=10)
         async with aiohttp.ClientSession() as session:
-            async with session.post(url, json=payload, timeout=timeout) as resp:
+            async with session.post(url, json=payload) as resp:
                 if resp.status == 200:
                     data = await resp.json()
-                    blocks = data.get("data", {}).get("blockchain", {}).get("blocks", {}).get("nodes", [])
-                    if blocks:
-                        return int(blocks[0]["seq_no"])
+                    return int(data["data"]["blockchain"]["blocks"]["nodes"][0]["seq_no"])
     except:
-        pass
-
-    return None
+        return None
 
 
 async def get_current_block_height():
     h = await fetch_block_height(GRAPHQL_URL_PRIMARY)
-    if h is not None:
+    if h:
         return h
     return await fetch_block_height(GRAPHQL_URL_FALLBACK)
 
 
 def format_duration(seconds):
-    seconds = max(0, int(seconds))
-    minutes = seconds // 60
-    secs = seconds % 60
-    return f"{minutes}m {secs}s"
+    seconds = int(round(seconds / 60.0) * 60)
+    h = seconds // 3600
+    m = (seconds % 3600) // 60
+    return f"{h}h {m}m" if h else f"{m}m"
 
 
-def calculate_epoch_stats(state, current_block):
-    start_block = int(state.get("start_block", EPOCH_RESET_BLOCK))
+def format_time(dt):
+    utc = dt.astimezone(UTC)
+    return f"{dt.strftime('%d %b %I:%M %p')} IST [UTC: {utc.strftime('%I:%M %p')}]"
 
-    blocks_since_reset = max(0, current_block - start_block)
 
-    blocks_in_current_epoch = blocks_since_reset % BLOCKS_PER_EPOCH
-    next_reset_block = start_block + BLOCKS_PER_EPOCH
-    blocks_until_reset = next_reset_block - current_block
+def calculate(state, current_block):
+    start_block = state.get("start_block", EPOCH_RESET_BLOCK)
 
-    elapsed_seconds = blocks_in_current_epoch * AVG_BLOCK_TIME
-    time_left_seconds = blocks_until_reset * AVG_BLOCK_TIME
+    produced = current_block - start_block
+    in_epoch = produced % BLOCKS_PER_EPOCH
+    next_reset = start_block + BLOCKS_PER_EPOCH
+    left = next_reset - current_block
 
-    reset_time = datetime.now(IST) + timedelta(seconds=time_left_seconds)
+    elapsed = in_epoch * AVG_BLOCK_TIME
+    remaining = left * AVG_BLOCK_TIME
+
+    now = datetime.now(IST)
+
+    t1_start = now - timedelta(seconds=elapsed)
+    t2_start = t1_start + timedelta(seconds=TIER_1_END * AVG_BLOCK_TIME)
+    t3_start = t1_start + timedelta(seconds=TIER_2_END * AVG_BLOCK_TIME)
+
+    if in_epoch < TIER_1_END:
+        tier = "Tier 1 (High reward)"
+    elif in_epoch < TIER_2_END:
+        tier = "Tier 2 (Medium reward)"
+    else:
+        tier = "Tier 3 (Low reward)"
 
     return {
-        "current_block": current_block,
-        "blocks_in_current_epoch": blocks_in_current_epoch,
-        "next_reset_block": next_reset_block,
-        "blocks_until_reset": blocks_until_reset,
-        "reset_time": reset_time,
-        "elapsed_seconds": elapsed_seconds,
-        "time_left_seconds": time_left_seconds,
+        "current": current_block,
+        "produced": produced,
+        "in_epoch": in_epoch,
+        "next": next_reset,
+        "left": left,
+        "elapsed": elapsed,
+        "remaining": remaining,
+        "reset_time": now + timedelta(seconds=remaining),
+        "t1": t1_start,
+        "t2": t2_start,
+        "t3": t3_start,
+        "tier": tier,
     }
 
 
 async def build_dashboard(state, current_block):
-    stats = calculate_epoch_stats(state, current_block)
+    s = calculate(state, current_block)
 
     return (
-        f"⏳ Timer Since Epoch Reset: {format_duration(stats['elapsed_seconds'])}\n"
-        f"⏱️ Time left to rest: {format_duration(stats['time_left_seconds'])}\n\n"
+        f"⏳ Timer Since Epoch Reset: {format_duration(s['elapsed'])}\n"
+        f"⏱️ Time left to rest: {format_duration(s['remaining'])}\n\n"
 
         f"📊 Block Progress\n"
-        f"• Current Block Height: {stats['current_block']:,}\n"
-        f"• Blocks produced today: {stats['blocks_in_current_epoch']:,}\n"
-        f"• Blocks Left to Reset: {stats['blocks_until_reset']:,}\n\n"
+        f"• Current Block Height: {s['current']:,}\n"
+        f"• Epoch 202 Reset at: {s['next']:,}\n"
+        f"• Blocks produced today: {s['produced']:,}\n"
+        f"• Blocks Left to Reset: {s['left']:,}\n"
+        f"• Progress: {(s['in_epoch']/BLOCKS_PER_EPOCH)*100:.1f}%\n\n"
+
+        f"🔁 Reset Estimation\n"
+        f"• {format_time(s['reset_time'])}\n\n"
 
         f"🏆 Reward Tiers\n\n"
 
         f"Tier 1 (High Reward) 🥇\n"
-        f"• Start: {stats['reset_time'].strftime('%d %b %I:%M %p')} IST\n\n"
+        f"• Start: {format_time(s['t1'])}\n\n"
 
         f"Tier 2 (Medium Reward) 🥈\n"
-        f"• Start: {stats['reset_time'].strftime('%d %b %I:%M %p')} IST\n\n"
+        f"• Start: {format_time(s['t2'])}\n\n"
 
         f"Tier 3 (Low Reward) 🥉\n"
-        f"• Start: {stats['reset_time'].strftime('%d %b %I:%M %p')} IST"
+        f"• Start: {format_time(s['t3'])}\n\n"
+
+        f"📈 Current Status\n"
+        f"• {s['tier']}"
     )
-
-
-async def send_dashboard(chat, state, current_block):
-    text = await build_dashboard(state, current_block)
-
-    if state.get("msg_id"):
-        try:
-            await bot.edit_message_text(
-                chat_id=int(chat),
-                message_id=int(state["msg_id"]),
-                text=text,
-                reply_markup=KEYBOARD
-            )
-            return
-        except:
-            pass
-
-    msg = await bot.send_message(int(chat), text, reply_markup=KEYBOARD)
-    state["msg_id"] = msg.message_id
 
 
 async def handle(update: Update):
     if not update.message:
         return
 
-    user_id = str(update.effective_user.id)
     chat = str(update.effective_chat.id)
+    user_id = str(update.effective_user.id)
 
     store, sha = load_data()
     state = store.get(chat, {"start_block": EPOCH_RESET_BLOCK})
 
-    text = (update.message.text or "").strip().lower()
+    text = (update.message.text or "").lower()
 
-    if text in ["/start", "📊 status", "/status"]:
-        current_block = await get_current_block_height()
-        await send_dashboard(chat, state, current_block)
+    if text in ["/status", "📊 status", "/start"]:
+        b = await get_current_block_height()
+        msg = await build_dashboard(state, b)
+        await bot.send_message(chat, msg, reply_markup=KEYBOARD)
 
     elif text in ["/blocks", "🔺 block height"]:
         b = await get_current_block_height()
@@ -219,13 +220,8 @@ async def handle(update: Update):
     elif text.startswith("/setblock"):
         if user_id not in OWNER_LIST:
             return
-
-        parts = text.split()
-        if len(parts) < 2:
-            return
-
-        state["start_block"] = int(parts[1])
-        await bot.send_message(chat, f"✅ Block set: {parts[1]}")
+        state["start_block"] = int(text.split()[1])
+        await bot.send_message(chat, "Block updated")
 
     store[chat] = state
     save_data(store, sha)
@@ -244,8 +240,8 @@ async def app(scope, receive, send):
             data = json.loads(body.decode())
             update = Update.de_json(data, bot)
             await handle(update)
-        except Exception as e:
-            print(e)
+        except:
+            pass
 
         await send({"type": "http.response.start", "status": 200})
         await send({"type": "http.response.body", "body": b"ok"})

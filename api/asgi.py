@@ -14,6 +14,7 @@ GITHUB_REPO = os.environ.get("GITHUB_REPO")
 GITHUB_FILE = os.environ.get("GITHUB_FILE", "data.json")
 
 OWNER_IDS = "1837260280"
+TARGET_THREAD_ID = 3
 
 bot = Bot(token=BOT_TOKEN)
 
@@ -26,6 +27,9 @@ AVG_BLOCK_TIME = 0.35
 
 TIER_1_END = BLOCKS_PER_EPOCH // 3
 TIER_2_END = (BLOCKS_PER_EPOCH * 2) // 3
+
+EPOCH_202_START_IST = datetime(2025, 5, 4, 17, 30, tzinfo=IST)
+EPOCH_DURATION_SECONDS = BLOCKS_PER_EPOCH * AVG_BLOCK_TIME
 
 OWNER_LIST = [i.strip() for i in OWNER_IDS.split(",") if i.strip()]
 
@@ -74,7 +78,7 @@ def save_data(store, sha):
 async def send_text(chat_id, text, forum=False):
     kw = {}
     if forum:
-        kw["message_thread_id"] = 3
+        kw["message_thread_id"] = TARGET_THREAD_ID
     return await bot.send_message(int(chat_id), text, **kw)
 
 
@@ -126,6 +130,17 @@ def add_history(state, item):
     state["history"].append(item)
 
 
+def get_epoch_no_from_start(start_block):
+    if start_block <= EPOCH_RESET_BLOCK:
+        return 202
+    return 202 + ((start_block - EPOCH_RESET_BLOCK) // BLOCKS_PER_EPOCH)
+
+
+def get_epoch_start_dt(epoch_no):
+    delta_epochs = epoch_no - 202
+    return EPOCH_202_START_IST + timedelta(seconds=delta_epochs * EPOCH_DURATION_SECONDS)
+
+
 def format_duration(seconds):
     seconds = max(0, int(round(seconds / 60.0) * 60))
     h = seconds // 3600
@@ -140,8 +155,6 @@ def format_time(dt):
 
 
 def sync_epoch_state(state, current_block):
-    now = datetime.now(IST)
-
     while True:
         start = int(state["start_block"])
         reset = start + BLOCKS_PER_EPOCH
@@ -149,34 +162,44 @@ def sync_epoch_state(state, current_block):
         if current_block < reset:
             break
 
+        epoch_no = get_epoch_no_from_start(start)
+        epoch_start_dt = get_epoch_start_dt(epoch_no)
+        epoch_reset_dt = epoch_start_dt + timedelta(seconds=EPOCH_DURATION_SECONDS)
+
         add_history(state, {
             "kind": "auto_reset",
-            "date": now.strftime("%d %b %Y"),
+            "date": epoch_reset_dt.strftime("%d %b %Y"),
+            "epoch_no": epoch_no,
             "epoch_start_block": start,
-            "epoch_start_ist": now.strftime("%I:%M %p"),
-            "epoch_start_utc": now.astimezone(UTC).strftime("%H:%M"),
+            "epoch_start_ist": epoch_start_dt.strftime("%I:%M %p"),
+            "epoch_start_utc": epoch_start_dt.astimezone(UTC).strftime("%H:%M"),
             "reset_block": reset,
-            "recorded_ist": now.strftime("%I:%M %p"),
-            "recorded_utc": now.astimezone(UTC).strftime("%H:%M"),
-            "epoch_duration": format_duration(BLOCKS_PER_EPOCH * AVG_BLOCK_TIME),
+            "reset_ist": epoch_reset_dt.strftime("%I:%M %p"),
+            "reset_utc": epoch_reset_dt.astimezone(UTC).strftime("%H:%M"),
+            "epoch_duration": format_duration(EPOCH_DURATION_SECONDS),
         })
 
         state["start_block"] = reset
 
 
 def record_manual_set(state, entered_block, current_block, start_block, reset_block, now_ist):
+    epoch_no = get_epoch_no_from_start(start_block)
+    epoch_start_dt = get_epoch_start_dt(epoch_no)
+    epoch_reset_dt = epoch_start_dt + timedelta(seconds=EPOCH_DURATION_SECONDS)
+
     add_history(state, {
         "kind": "manual_set",
         "date": now_ist.strftime("%d %b %Y"),
+        "epoch_no": epoch_no,
         "entered_block": entered_block,
         "current_block": current_block,
         "epoch_start_block": start_block,
-        "epoch_start_ist": now_ist.strftime("%I:%M %p"),
-        "epoch_start_utc": now_ist.astimezone(UTC).strftime("%H:%M"),
+        "epoch_start_ist": epoch_start_dt.strftime("%I:%M %p"),
+        "epoch_start_utc": epoch_start_dt.astimezone(UTC).strftime("%H:%M"),
         "reset_block": reset_block,
-        "recorded_ist": now_ist.strftime("%I:%M %p"),
-        "recorded_utc": now_ist.astimezone(UTC).strftime("%H:%M"),
-        "epoch_duration": format_duration(BLOCKS_PER_EPOCH * AVG_BLOCK_TIME),
+        "reset_ist": epoch_reset_dt.strftime("%I:%M %p"),
+        "reset_utc": epoch_reset_dt.astimezone(UTC).strftime("%H:%M"),
+        "epoch_duration": format_duration(EPOCH_DURATION_SECONDS),
     })
 
 
@@ -191,9 +214,11 @@ def calculate_epoch_stats(state, current_block):
     elapsed = in_epoch * AVG_BLOCK_TIME
     remaining = left * AVG_BLOCK_TIME
 
-    now = datetime.now(IST)
+    epoch_no = get_epoch_no_from_start(start)
+    epoch_start_dt = get_epoch_start_dt(epoch_no)
+    reset_dt = epoch_start_dt + timedelta(seconds=EPOCH_DURATION_SECONDS)
 
-    t1 = now - timedelta(seconds=elapsed)
+    t1 = epoch_start_dt
     t2 = t1 + timedelta(seconds=TIER_1_END * AVG_BLOCK_TIME)
     t3 = t1 + timedelta(seconds=TIER_2_END * AVG_BLOCK_TIME)
 
@@ -204,6 +229,7 @@ def calculate_epoch_stats(state, current_block):
     )
 
     return {
+        "epoch_no": epoch_no,
         "current": current_block,
         "produced": produced,
         "in_epoch": in_epoch,
@@ -211,7 +237,7 @@ def calculate_epoch_stats(state, current_block):
         "left": left,
         "elapsed": elapsed,
         "remaining": remaining,
-        "reset_time": now + timedelta(seconds=remaining),
+        "reset_time": reset_dt,
         "t1": t1,
         "t2": t2,
         "t3": t3,
@@ -228,7 +254,7 @@ async def build_dashboard(state, current_block):
 
         f"📊 Block Progress\n"
         f"• Current Block Height: {s['current']:,}\n"
-        f"• Epoch 202 Reset at: {s['next']:,}\n"
+        f"• Epoch {s['epoch_no']} Reset at: {s['next']:,}\n"
         f"• Blocks produced today: {s['produced']:,}\n"
         f"• Blocks Left to Reset: {s['left']:,}\n"
         f"• Progress: {(s['in_epoch'] / BLOCKS_PER_EPOCH) * 100:.1f}%\n\n"
@@ -380,13 +406,19 @@ async def handle(update: Update):
 
         sync_epoch_state(state, current_block)
         s = calculate_epoch_stats(state, current_block)
+
         msg = await send_text(chat, f"⏳ Time to next epoch: {format_duration(s['remaining'])}", forum=forum)
+
         try:
-            await bot.pin_chat_message(chat_id=int(chat), message_id=msg.message_id, disable_notification=True)
+            await bot.pin_chat_message(
+                chat_id=int(chat),
+                message_id=msg.message_id,
+                disable_notification=True,
+            )
         except:
             pass
-        state["pin_msg_id"] = msg.message_id
 
+        state["pin_msg_id"] = msg.message_id
         store[chat] = state
         save_data(store, sha)
         return
@@ -447,21 +479,21 @@ async def handle(update: Update):
             kind = h.get("kind", "manual_set")
             if kind == "auto_reset":
                 out += (
-                    f"📅 {h['date']} | Auto Reset\n"
-                    f"• Epoch Start Block: {h['epoch_start_block']:,}\n"
-                    f"• Epoch Start Time: {h.get('epoch_start_ist', h['recorded_ist'])} | UTC: {h.get('epoch_start_utc', h['recorded_utc'])}\n"
+                    f"📅 Epoch {h.get('epoch_no', 202)} | Auto Reset\n"
+                    f"• Start Block: {h['epoch_start_block']:,}\n"
+                    f"• Start Time: {h['date']} | {h['epoch_start_ist']} | UTC: {h['epoch_start_utc']}\n"
                     f"• Reset Block: {h['reset_block']:,}\n"
-                    f"• IST: {h['recorded_ist']} | UTC: {h['recorded_utc']}\n"
-                    f"• Epoch Duration: {h.get('epoch_duration', format_duration(BLOCKS_PER_EPOCH * AVG_BLOCK_TIME))}\n\n"
+                    f"• Reset Time: {h['date']} | {h['reset_ist']} | UTC: {h['reset_utc']}\n"
+                    f"• Epoch Duration: {h.get('epoch_duration', format_duration(EPOCH_DURATION_SECONDS))}\n\n"
                 )
             else:
                 out += (
-                    f"📅 {h['date']} | Manual Set\n"
-                    f"• Epoch Start Block: {h['epoch_start_block']:,}\n"
-                    f"• Epoch Start Time: {h.get('epoch_start_ist', h['recorded_ist'])} | UTC: {h.get('epoch_start_utc', h['recorded_utc'])}\n"
+                    f"📅 Epoch {h.get('epoch_no', 202)} | Manual Set\n"
+                    f"• Start Block: {h['epoch_start_block']:,}\n"
+                    f"• Start Time: {h['date']} | {h['epoch_start_ist']} | UTC: {h['epoch_start_utc']}\n"
                     f"• Reset Block: {h['reset_block']:,}\n"
-                    f"• IST: {h['recorded_ist']} | UTC: {h['recorded_utc']}\n"
-                    f"• Epoch Duration: {h.get('epoch_duration', format_duration(BLOCKS_PER_EPOCH * AVG_BLOCK_TIME))}\n\n"
+                    f"• Reset Time: {h['date']} | {h['reset_ist']} | UTC: {h['reset_utc']}\n"
+                    f"• Epoch Duration: {h.get('epoch_duration', format_duration(EPOCH_DURATION_SECONDS))}\n\n"
                 )
 
         store[chat] = state

@@ -39,8 +39,8 @@ GITHUB_API = f"https://api.github.com/repos/{GITHUB_REPO}/contents/{GITHUB_FILE}
 
 KEYBOARD = ReplyKeyboardMarkup(
     [
-        ["📊 Status", "📦 Block"],
-        ["📈 Analysis"],
+        ["/Status 📊", "/Block Height🔺"],
+        ["/Analysis 📈", "/Help ℹ️"],
     ],
     resize_keyboard=True,
 )

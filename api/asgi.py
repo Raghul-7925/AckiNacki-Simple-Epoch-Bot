@@ -7,7 +7,7 @@ import aiohttp
 from datetime import datetime, timedelta, timezone
 from urllib.request import Request, urlopen
 
-from telegram import Bot, Update
+from telegram import Bot, Update, ReplyKeyboardRemove
 
 BOT_TOKEN = os.environ.get("BOT_TOKEN")
 GITHUB_TOKEN = os.environ.get("GITHUB_TOKEN")
@@ -84,6 +84,7 @@ async def send_text(chat_id, text, forum=False, **kwargs):
     kw = {}
     kw.update(message_kwargs(forum))
     kw.update(kwargs)
+    kw["reply_markup"] = ReplyKeyboardRemove()
     return await bot.send_message(int(chat_id), text, **kw)
 
 
@@ -499,4 +500,4 @@ async def app(scope, receive, send):
 
         await send({"type": "http.response.start", "status": 200})
         await send({"type": "http.response.body", "body": b"ok"})
-    
+        

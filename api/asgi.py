@@ -6,7 +6,7 @@ import aiohttp
 from datetime import datetime, timedelta, timezone
 from urllib.request import Request, urlopen
 
-from telegram import Bot, Update, ReplyKeyboardMarkup
+from telegram import Bot, Update
 
 BOT_TOKEN = os.environ.get("BOT_TOKEN")
 GITHUB_TOKEN = os.environ.get("GITHUB_TOKEN")
@@ -34,15 +34,6 @@ GRAPHQL_URL_PRIMARY = "https://mainnet.ackinacki.org/graphql"
 GRAPHQL_URL_FALLBACK = "https://mainnet-cf.ackinacki.org/graphql"
 
 GITHUB_API = f"https://api.github.com/repos/{GITHUB_REPO}/contents/{GITHUB_FILE}"
-
-KEYBOARD = ReplyKeyboardMarkup(
-    [
-        ["📊 Status", "🔺 Block Height"],
-        ["⚙️ Set Block", "📈 Analysis"],
-        ["ℹ️ Help"],
-    ],
-    resize_keyboard=True,
-)
 
 
 def gh_headers():
@@ -81,18 +72,11 @@ def save_data(store, sha):
     urlopen(req)
 
 
-def message_kwargs(forum=False):
-    if forum:
-        return {"message_thread_id": TARGET_THREAD_ID}
-    return {}
-
-
-async def send_text(chat_id, text, forum=False, show_keyboard=True, **kwargs):
+async def send_text(chat_id, text, forum=False, **kwargs):
     kw = {}
-    kw.update(message_kwargs(forum))
+    if forum:
+        kw["message_thread_id"] = TARGET_THREAD_ID
     kw.update(kwargs)
-    if show_keyboard:
-        kw["reply_markup"] = KEYBOARD
     return await bot.send_message(int(chat_id), text, **kw)
 
 
@@ -164,10 +148,11 @@ def sync_epoch_state(state, current_block):
         add_history(state, {
             "kind": "auto_reset",
             "date": now_ist.strftime("%d %b %Y"),
-            "reset_block": reset_block,
             "epoch_start_block": start_block,
+            "reset_block": reset_block,
             "recorded_ist": now_ist.strftime("%I:%M %p"),
             "recorded_utc": now_ist.astimezone(UTC).strftime("%H:%M"),
+            "epoch_duration": format_duration(BLOCKS_PER_EPOCH * AVG_BLOCK_TIME),
         })
 
         state["start_block"] = reset_block
@@ -270,17 +255,41 @@ async def build_dashboard(state, current_block):
     return text
 
 
-async def send_dashboard(chat, state, current_block, forum=False):
+async def send_dashboard(chat, state, current_block, forum=False, pin=False):
     text = await build_dashboard(state, current_block)
 
     if state.get("msg_id"):
         try:
-            await bot.delete_message(chat_id=int(chat), message_id=int(state["msg_id"]))
+            await bot.edit_message_text(
+                chat_id=int(chat),
+                message_id=int(state["msg_id"]),
+                text=text,
+            )
+            if pin:
+                try:
+                    await bot.pin_chat_message(
+                        chat_id=int(chat),
+                        message_id=int(state["msg_id"]),
+                        disable_notification=True,
+                    )
+                except:
+                    pass
+            return
         except:
             pass
 
     msg = await send_text(chat, text, forum=forum)
     state["msg_id"] = msg.message_id
+
+    if pin:
+        try:
+            await bot.pin_chat_message(
+                chat_id=int(chat),
+                message_id=msg.message_id,
+                disable_notification=True,
+            )
+        except:
+            pass
 
 
 def record_manual_set(state, entered_block, current_block, start_block, reset_block, now_ist):
@@ -293,6 +302,7 @@ def record_manual_set(state, entered_block, current_block, start_block, reset_bl
         "reset_block": reset_block,
         "recorded_ist": now_ist.strftime("%I:%M %p"),
         "recorded_utc": now_ist.astimezone(UTC).strftime("%H:%M"),
+        "epoch_duration": format_duration(BLOCKS_PER_EPOCH * AVG_BLOCK_TIME),
     })
 
 
@@ -314,7 +324,7 @@ async def handle(update: Update):
     text = (update.message.text or "").strip()
     low = text.lower()
 
-    if low in ["/start", "🔄 refresh"]:
+    if low in ["/start", "/status", "📊 status", "🔄 refresh"]:
         current_block = await get_current_block_height()
         if current_block is None:
             await send_text(chat, "⚠️ Unable to fetch current block height.", forum=forum)
@@ -322,37 +332,18 @@ async def handle(update: Update):
 
         sync_epoch_state(state, current_block)
 
-        if not state.get("seen_start"):
+        if not state.get("seen_start") and low == "/start":
             await send_text(chat, "👋 Welcome to Epoch Helper Bot!", forum=forum)
             state["seen_start"] = True
 
-        loading_msg = await send_text(chat, "⏳ Updating...", forum=forum, show_keyboard=False)
-        await asyncio.sleep(0.5)
+        loading_msg = await send_text(chat, "⏳ Updating.....", forum=forum)
+        await asyncio.sleep(2)
         try:
             await bot.delete_message(chat_id=int(chat), message_id=loading_msg.message_id)
         except:
             pass
 
-        await send_dashboard(chat, state, current_block, forum=forum)
-        store[chat] = state
-        save_data(store, sha)
-        return
-
-    if low in ["/status", "📊 status"]:
-        loading_msg = await send_text(chat, "⏳ Updating...", forum=forum, show_keyboard=False)
-        await asyncio.sleep(0.5)
-        try:
-            await bot.delete_message(chat_id=int(chat), message_id=loading_msg.message_id)
-        except:
-            pass
-
-        current_block = await get_current_block_height()
-        if current_block is None:
-            await send_text(chat, "⚠️ Unable to fetch current block height.", forum=forum)
-            return
-
-        sync_epoch_state(state, current_block)
-        await send_dashboard(chat, state, current_block, forum=forum)
+        await send_dashboard(chat, state, current_block, forum=forum, pin=False)
         store[chat] = state
         save_data(store, sha)
         return
@@ -366,14 +357,32 @@ async def handle(update: Update):
         return
 
     if low in ["/help", "ℹ️ help"]:
-        await send_text(
-            chat,
-            "Commands:\n/start\n/status\n/blocks\n/setblock <height>\n/analysis",
-            forum=forum,
+        help_text = (
+            "🧭 Bot Commands\n\n"
+            "/start - refresh / update / ping\n"
+            "/status - update the dashboard\n"
+            "/blocks - show current block height\n"
+            "/analysis - reports of data\n"
+            "/setblock <height> - manually set the start / reset block for the day\n"
+            "/pin - send one single updating dashboard message\n"
+            "/help - show this help"
         )
+        await send_text(chat, help_text, forum=forum)
         return
 
-    if low.startswith("/setblock") or low.startswith("⚙️ set block"):
+    if low == "/pin":
+        current_block = await get_current_block_height()
+        if current_block is None:
+            await send_text(chat, "⚠️ Unable to fetch current block height.", forum=forum)
+            return
+
+        sync_epoch_state(state, current_block)
+        await send_dashboard(chat, state, current_block, forum=forum, pin=True)
+        store[chat] = state
+        save_data(store, sha)
+        return
+
+    if low.startswith("/setblock"):
         if user_id not in OWNER_LIST:
             return
 
@@ -412,9 +421,6 @@ async def handle(update: Update):
         return
 
     if low in ["/analysis", "📈 analysis"]:
-        if user_id not in OWNER_LIST:
-            return
-
         current_block = await get_current_block_height()
         if current_block is None:
             await send_text(chat, "⚠️ Unable to fetch current block height.", forum=forum)
@@ -435,14 +441,16 @@ async def handle(update: Update):
                     f"📅 {h['date']} | Auto Reset\n"
                     f"• Epoch Start Block: {h['epoch_start_block']:,}\n"
                     f"• Reset Block: {h['reset_block']:,}\n"
-                    f"• IST: {h['recorded_ist']} | UTC: {h['recorded_utc']}\n\n"
+                    f"• IST: {h['recorded_ist']} | UTC: {h['recorded_utc']}\n"
+                    f"• Epoch Duration: {h.get('epoch_duration', format_duration(BLOCKS_PER_EPOCH * AVG_BLOCK_TIME))}\n\n"
                 )
             else:
                 out += (
                     f"📅 {h['date']} | Manual Set\n"
                     f"• Epoch Start Block: {h['epoch_start_block']:,}\n"
                     f"• Reset Block: {h['reset_block']:,}\n"
-                    f"• IST: {h['recorded_ist']} | UTC: {h['recorded_utc']}\n\n"
+                    f"• IST: {h['recorded_ist']} | UTC: {h['recorded_utc']}\n"
+                    f"• Epoch Duration: {h.get('epoch_duration', format_duration(BLOCKS_PER_EPOCH * AVG_BLOCK_TIME))}\n\n"
                 )
 
         store[chat] = state

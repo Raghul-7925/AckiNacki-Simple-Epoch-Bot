@@ -281,13 +281,36 @@ async def update_pin_message(chat, state, time_left_text):
     if not pin_id:
         return
 
+    new_text = f"⏳ Time to next epoch: {time_left_text}"
+
     try:
         await bot.edit_message_text(
             chat_id=int(chat),
             message_id=int(pin_id),
-            text=f"⏳ Time to next epoch: {time_left_text}",
+            text=new_text,
             reply_markup=ReplyKeyboardRemove(),
         )
+        return
+    except:
+        pass
+
+    try:
+        await bot.unpin_chat_message(chat_id=int(chat))
+    except:
+        pass
+
+    try:
+        msg = await bot.send_message(
+            int(chat),
+            new_text,
+            reply_markup=ReplyKeyboardRemove(),
+        )
+        await bot.pin_chat_message(
+            chat_id=int(chat),
+            message_id=msg.message_id,
+            disable_notification=True,
+        )
+        state["pin_msg_id"] = msg.message_id
     except:
         pass
 
@@ -346,7 +369,7 @@ async def handle(update: Update):
             state["seen_start"] = True
 
         loading_msg = await send_text(chat, "⏳ Updating.....", forum=forum)
-        await asyncio.sleep(2)
+        await asyncio.sleep(0.5)
         try:
             await bot.delete_message(chat_id=int(chat), message_id=loading_msg.message_id)
         except:
@@ -359,7 +382,7 @@ async def handle(update: Update):
 
     if low in ["/status", "📊 status"]:
         loading_msg = await send_text(chat, "⏳ Updating.....", forum=forum)
-        await asyncio.sleep(1)
+        await asyncio.sleep(0.5)
         try:
             await bot.delete_message(chat_id=int(chat), message_id=loading_msg.message_id)
         except:

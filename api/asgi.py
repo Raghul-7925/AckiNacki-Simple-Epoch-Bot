@@ -310,10 +310,14 @@ async def update_pin_message(chat, state, time_left_text, forum=False):
         pass
 
     try:
+        kw = {"reply_markup": ReplyKeyboardRemove()}
+        if forum:
+            kw["message_thread_id"] = TARGET_THREAD_ID
+
         msg = await bot.send_message(
             int(chat),
             new_text,
-            reply_markup=ReplyKeyboardRemove(),
+            **kw,
         )
         await bot.pin_chat_message(
             chat_id=int(chat),

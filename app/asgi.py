@@ -638,4 +638,33 @@ async def handle(update: Update):
         sync_epoch_state(global_state, current_block)
 
         hist = global_state.get("history", [])
+        async def app(scope, receive, send):
+    if scope["type"] == "http":
+        body = b""
+        more = True
+
+        while more:
+            message = await receive()
+            body += message.get("body", b"")
+            more = message.get("more_body", False)
+
+        try:
+            data = json.loads(body.decode())
+            update = Update.de_json(data, bot)
+            await handle(update)
+        except Exception as e:
+            print(e)
+
+        await send({
+            "type": "http.response.start",
+            "status": 200,
+            "headers": [
+                [b"content-type", b"text/plain"]
+            ]
+        })
+
+        await send({
+            "type": "http.response.body",
+            "body": b"ok"
+        })
         

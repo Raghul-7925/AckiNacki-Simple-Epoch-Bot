@@ -30,7 +30,6 @@ TIER_1_END = BLOCKS_PER_EPOCH // 3
 TIER_2_END = (BLOCKS_PER_EPOCH * 2) // 3
 
 EPOCH_202_START_IST = datetime(2025, 5, 4, 17, 30, tzinfo=IST)
-EPOCH_DURATION_SECONDS = BLOCKS_PER_EPOCH * AVG_BLOCK_TIME
 
 OWNER_LIST = [i.strip() for i in OWNER_IDS.split(",") if i.strip()]
 
@@ -41,6 +40,9 @@ GITHUB_API = f"https://api.github.com/repos/{GITHUB_REPO}/contents/{GITHUB_FILE}
 
 GLOBAL_KEY = "global_epoch_state"
 CHAT_META_KEY = "chat_meta"
+
+DEFAULT_ENDPOINTS = "mainnet.ackinacki.org,mainnet-cf.ackinacki.org"
+DEFAULT_SAMPLE_BLOCKS = 120
 
 
 def gh_headers():
@@ -94,40 +96,150 @@ async def send_text(chat_id, text, forum=False):
     return await bot.send_message(int(chat_id), text, **kw)
 
 
-async def fetch_block_height(url):
-    query = """
-    query GetBlocks($limit: Int!) {
-        blockchain {
-            blocks(last: $limit) {
-                nodes {
-                    seq_no
-                }
-            }
-        }
-    }
-    """
-    payload = {"query": query, "variables": {"limit": 1}}
-
+def env_int(key, fallback):
+    raw = os.environ.get(key)
+    if raw is None or raw == "":
+        return fallback
     try:
-        timeout = aiohttp.ClientTimeout(total=10)
-        async with aiohttp.ClientSession() as session:
-            async with session.post(url, json=payload, timeout=timeout) as resp:
-                if resp.status == 200:
-                    data = await resp.json()
-                    blocks = data.get("data", {}).get("blockchain", {}).get("blocks", {}).get("nodes", [])
-                    if blocks:
-                        return int(blocks[0]["seq_no"])
+        return int(raw)
     except:
-        pass
+        return fallback
 
-    return None
+
+def normalize_endpoint(endpoint):
+    trimmed = str(endpoint or "").strip()
+    if not trimmed:
+        return None
+    without_slash = trimmed.rstrip("/")
+    return without_slash if without_slash.startswith("http") else f"https://{without_slash}"
+
+
+def build_graphql_urls():
+    raw = os.environ.get("ENDPOINTS", DEFAULT_ENDPOINTS)
+    urls = []
+    seen = set()
+
+    for endpoint in raw.split(","):
+        base = normalize_endpoint(endpoint)
+        if not base:
+            continue
+        url = f"{base}/graphql"
+        if url not in seen:
+            seen.add(url)
+            urls.append(url)
+
+    return urls or [GRAPHQL_URL_PRIMARY, GRAPHQL_URL_FALLBACK]
+
+
+def normalize_uint(value):
+    if value is None:
+        return 0
+    if isinstance(value, int):
+        return value
+    if isinstance(value, float):
+        return int(value)
+    if isinstance(value, str) and value.strip():
+        try:
+            return int(value)
+        except:
+            return 0
+    return 0
+
+
+async def graphql_fetch(query, retries_per_endpoint=2):
+    urls = build_graphql_urls()
+    last_err = None
+
+    for url in urls:
+        for i in range(retries_per_endpoint):
+            try:
+                timeout = aiohttp.ClientTimeout(total=15)
+                async with aiohttp.ClientSession() as session:
+                    async with session.post(
+                        url,
+                        json={"query": query},
+                        timeout=timeout,
+                    ) as resp:
+                        if not resp.ok:
+                            raise RuntimeError(f"HTTP {resp.status} @ {url}")
+                        return {"url": url, "json": await resp.json()}
+            except Exception as e:
+                last_err = e
+                if i < retries_per_endpoint - 1:
+                    await asyncio.sleep(1)
+
+    raise last_err if last_err else RuntimeError("GraphQL failed on all endpoints")
+async def get_live_block_snapshot():
+    sample_blocks = max(3, env_int("BLOCK_SAMPLE_BLOCKS", DEFAULT_SAMPLE_BLOCKS))
+    query = f"""
+    query {{
+        blockchain {{
+            blocks(last: {sample_blocks}) {{
+                nodes {{
+                    seq_no
+                    gen_utime
+                }}
+            }}
+        }}
+    }}
+    """
+
+    result = await graphql_fetch(query)
+    nodes = (
+        result.get("json", {})
+        .get("data", {})
+        .get("blockchain", {})
+        .get("blocks", {})
+        .get("nodes", [])
+    )
+
+    parsed = []
+    for node in nodes:
+        if not isinstance(node, dict):
+            continue
+        seq_no = normalize_uint(node.get("seq_no"))
+        gen_utime = normalize_uint(node.get("gen_utime"))
+        if seq_no > 0:
+            parsed.append({"seq_no": seq_no, "gen_utime": gen_utime})
+
+    parsed.sort(key=lambda x: x["seq_no"])
+
+    if not parsed:
+        raise RuntimeError("No block height available from blockchain.blocks")
+
+    first = parsed[0]
+    last = parsed[-1]
+
+    sample_block_sec = None
+    if (
+        len(parsed) >= 2
+        and first["seq_no"] > 0
+        and last["seq_no"] > first["seq_no"]
+        and last["gen_utime"] >= first["gen_utime"]
+    ):
+        delta_seq = last["seq_no"] - first["seq_no"]
+        delta_sec = last["gen_utime"] - first["gen_utime"]
+        if delta_seq > 0 and delta_sec >= 0:
+            sample_block_sec = delta_sec / delta_seq
+
+    observed_at = (
+        datetime.fromtimestamp(last["gen_utime"], UTC).isoformat()
+        if last["gen_utime"] > 0
+        else datetime.now(UTC).isoformat()
+    )
+
+    return {
+        "sourceUrl": result["url"],
+        "currentHeight": last["seq_no"],
+        "sampleBlockSec": sample_block_sec,
+        "sampleBlocks": len(parsed),
+        "observedAt": observed_at,
+    }
 
 
 async def get_current_block_height():
-    h = await fetch_block_height(GRAPHQL_URL_PRIMARY)
-    if h is not None:
-        return h
-    return await fetch_block_height(GRAPHQL_URL_FALLBACK)
+    snapshot = await get_live_block_snapshot()
+    return snapshot["currentHeight"]
 
 
 def ensure_global_defaults(state):
@@ -213,7 +325,7 @@ def get_epoch_no_from_start(start_block):
 
 def get_epoch_start_dt(epoch_no):
     delta_epochs = epoch_no - 202
-    return EPOCH_202_START_IST + timedelta(seconds=delta_epochs * EPOCH_DURATION_SECONDS)
+    return EPOCH_202_START_IST + timedelta(seconds=delta_epochs * BLOCKS_PER_EPOCH * AVG_BLOCK_TIME)
 
 
 def format_duration(seconds):
@@ -237,7 +349,14 @@ def get_current_reward_tier(in_epoch):
     return "Tier 3 - Low Reward( > 12k taps)"
 
 
-def sync_epoch_state(state, current_block):
+def epoch_duration_text(block_sec):
+    sec = block_sec if (block_sec and block_sec > 0) else AVG_BLOCK_TIME
+    return format_duration(BLOCKS_PER_EPOCH * sec)
+
+
+def sync_epoch_state(state, current_block, block_sec=None):
+    sec = block_sec if (block_sec and block_sec > 0) else AVG_BLOCK_TIME
+
     while True:
         start = int(state["start_block"])
         reset = start + BLOCKS_PER_EPOCH
@@ -247,7 +366,7 @@ def sync_epoch_state(state, current_block):
 
         epoch_no = get_epoch_no_from_start(start)
         epoch_start_dt = get_epoch_start_dt(epoch_no)
-        epoch_reset_dt = epoch_start_dt + timedelta(seconds=EPOCH_DURATION_SECONDS)
+        epoch_reset_dt = epoch_start_dt + timedelta(seconds=BLOCKS_PER_EPOCH * sec)
 
         add_history(state, {
             "kind": "auto_reset",
@@ -259,17 +378,17 @@ def sync_epoch_state(state, current_block):
             "reset_block": reset,
             "reset_ist": epoch_reset_dt.strftime("%I:%M %p"),
             "reset_utc": epoch_reset_dt.astimezone(UTC).strftime("%H:%M"),
-            "epoch_duration": format_duration(EPOCH_DURATION_SECONDS),
+            "epoch_duration": epoch_duration_text(sec),
         })
 
         state["epoch_start_ts"] = int(epoch_reset_dt.timestamp())
         state["start_block"] = reset
+    def record_manual_set(state, entered_block, current_block, start_block, reset_block, now_ist, block_sec=None):
+    sec = block_sec if (block_sec and block_sec > 0) else AVG_BLOCK_TIME
 
-
-def record_manual_set(state, entered_block, current_block, start_block, reset_block, now_ist):
     epoch_no = get_epoch_no_from_start(start_block)
     epoch_start_dt = get_epoch_start_dt(epoch_no)
-    epoch_reset_dt = epoch_start_dt + timedelta(seconds=EPOCH_DURATION_SECONDS)
+    epoch_reset_dt = epoch_start_dt + timedelta(seconds=BLOCKS_PER_EPOCH * sec)
 
     add_history(state, {
         "kind": "manual_set",
@@ -283,20 +402,21 @@ def record_manual_set(state, entered_block, current_block, start_block, reset_bl
         "reset_block": reset_block,
         "reset_ist": epoch_reset_dt.strftime("%I:%M %p"),
         "reset_utc": epoch_reset_dt.astimezone(UTC).strftime("%H:%M"),
-        "epoch_duration": format_duration(EPOCH_DURATION_SECONDS),
+        "epoch_duration": epoch_duration_text(sec),
     })
 
 
-def calculate_epoch_stats(state, current_block):
+def calculate_epoch_stats(state, current_block, block_sec=None):
     start = int(state["start_block"])
+    sec = block_sec if (block_sec and block_sec > 0) else state.get("last_block_sec") or AVG_BLOCK_TIME
 
     produced = max(0, current_block - start)
     in_epoch = produced % BLOCKS_PER_EPOCH
     next_reset = start + BLOCKS_PER_EPOCH
     left = max(0, next_reset - current_block)
 
-    elapsed = in_epoch * AVG_BLOCK_TIME
-    remaining = left * AVG_BLOCK_TIME
+    elapsed = in_epoch * sec
+    remaining = left * sec
 
     epoch_no = get_epoch_no_from_start(start)
 
@@ -324,8 +444,8 @@ def calculate_epoch_stats(state, current_block):
     }
 
 
-async def build_dashboard(global_state, current_block):
-    s = calculate_epoch_stats(global_state, current_block)
+async def build_dashboard(global_state, current_block, block_sec=None):
+    s = calculate_epoch_stats(global_state, current_block, block_sec=block_sec)
 
     return (
         f"⏳ Timer Since Epoch Reset: {format_duration(s['elapsed'])}\n"
@@ -400,8 +520,8 @@ async def update_pin_message(chat, meta, global_state, time_left_text, forum=Fal
         pass
 
 
-async def send_dashboard(chat, meta, global_state, current_block, forum=False):
-    text = await build_dashboard(global_state, current_block)
+async def send_dashboard(chat, meta, global_state, current_block, block_sec=None, forum=False):
+    text = await build_dashboard(global_state, current_block, block_sec=block_sec)
 
     if meta.get("msg_id"):
         try:
@@ -412,7 +532,7 @@ async def send_dashboard(chat, meta, global_state, current_block, forum=False):
     msg = await send_text(chat, text, forum=forum)
     meta["msg_id"] = msg.message_id
 
-    s = calculate_epoch_stats(global_state, current_block)
+    s = calculate_epoch_stats(global_state, current_block, block_sec=block_sec)
     await update_pin_message(chat, meta, global_state, format_duration(s["remaining"]), forum=forum)
 
 
@@ -442,12 +562,12 @@ async def handle(update: Update):
                 pass
             chat_meta["pin_msg_id"] = None
 
-        current_block = await get_current_block_height()
-        if current_block is None:
-            await send_text(chat, "⚠️ Unable to fetch current block height.", forum=forum)
-            return
+        snapshot = await get_live_block_snapshot()
+        current_block = snapshot["currentHeight"]
+        block_sec = snapshot.get("sampleBlockSec") or global_state.get("last_block_sec") or AVG_BLOCK_TIME
+        global_state["last_block_sec"] = block_sec
 
-        sync_epoch_state(global_state, current_block)
+        sync_epoch_state(global_state, current_block, block_sec=block_sec)
 
         if low == "/start" and not chat_meta.get("seen_start"):
             await send_text(chat, "👋 Welcome to Epoch Helper Bot!", forum=forum)
@@ -466,7 +586,7 @@ async def handle(update: Update):
         except:
             pass
 
-        await send_dashboard(chat, chat_meta, global_state, current_block, forum=forum)
+        await send_dashboard(chat, chat_meta, global_state, current_block, block_sec=block_sec, forum=forum)
 
         store[GLOBAL_KEY] = global_state
         store[CHAT_META_KEY][chat] = chat_meta
@@ -474,7 +594,7 @@ async def handle(update: Update):
         return
 
     if low in ["/status", "📊 status"]:
-        block_task = asyncio.create_task(get_current_block_height())
+        block_task = asyncio.create_task(get_live_block_snapshot())
 
         loading_msg = await send_text(chat, "📡 Connecting to blockchain...", forum=forum)
         await animate_message(
@@ -485,23 +605,19 @@ async def handle(update: Update):
             delay=0.2,
         )
 
-        current_block = await block_task
-        if current_block is None:
-            try:
-                await bot.delete_message(chat_id=int(chat), message_id=loading_msg.message_id)
-            except:
-                pass
-            await send_text(chat, "⚠️ Unable to fetch current block height.", forum=forum)
-            return
+        snapshot = await block_task
+        current_block = snapshot["currentHeight"]
+        block_sec = snapshot.get("sampleBlockSec") or global_state.get("last_block_sec") or AVG_BLOCK_TIME
+        global_state["last_block_sec"] = block_sec
 
-        sync_epoch_state(global_state, current_block)
+        sync_epoch_state(global_state, current_block, block_sec=block_sec)
 
         try:
             await bot.delete_message(chat_id=int(chat), message_id=loading_msg.message_id)
         except:
             pass
 
-        await send_dashboard(chat, chat_meta, global_state, current_block, forum=forum)
+        await send_dashboard(chat, chat_meta, global_state, current_block, block_sec=block_sec, forum=forum)
 
         store[GLOBAL_KEY] = global_state
         store[CHAT_META_KEY][chat] = chat_meta
@@ -509,7 +625,7 @@ async def handle(update: Update):
         return
 
     if low in ["/blocks", "🔺 block height"]:
-        block_task = asyncio.create_task(get_current_block_height())
+        block_task = asyncio.create_task(get_live_block_snapshot())
 
         loading_msg = await send_text(chat, "📡 Connecting to blockchain...", forum=forum)
         await animate_message(
@@ -520,7 +636,9 @@ async def handle(update: Update):
             delay=0.2,
         )
 
-        b = await block_task
+        snapshot = await block_task
+        b = snapshot["currentHeight"]
+
         try:
             await bot.delete_message(chat_id=int(chat), message_id=loading_msg.message_id)
         except:
@@ -544,13 +662,13 @@ async def handle(update: Update):
         return
 
     if low == "/pin":
-        current_block = await get_current_block_height()
-        if current_block is None:
-            await send_text(chat, "⚠️ Unable to fetch current block height.", forum=forum)
-            return
+        snapshot = await get_live_block_snapshot()
+        current_block = snapshot["currentHeight"]
+        block_sec = snapshot.get("sampleBlockSec") or global_state.get("last_block_sec") or AVG_BLOCK_TIME
+        global_state["last_block_sec"] = block_sec
 
-        sync_epoch_state(global_state, current_block)
-        s = calculate_epoch_stats(global_state, current_block)
+        sync_epoch_state(global_state, current_block, block_sec=block_sec)
+        s = calculate_epoch_stats(global_state, current_block, block_sec=block_sec)
 
         msg = await send_text(chat, f"⏳ Time to next epoch: {format_duration(s['remaining'])}", forum=forum)
 
@@ -585,10 +703,10 @@ async def handle(update: Update):
             await send_text(chat, "❌ Invalid block height.", forum=forum)
             return
 
-        current_block = await get_current_block_height()
-        if current_block is None:
-            await send_text(chat, "⚠️ Unable to fetch current block height.", forum=forum)
-            return
+        snapshot = await get_live_block_snapshot()
+        current_block = snapshot["currentHeight"]
+        block_sec = snapshot.get("sampleBlockSec") or global_state.get("last_block_sec") or AVG_BLOCK_TIME
+        global_state["last_block_sec"] = block_sec
 
         now_ist = datetime.now(IST)
 
@@ -601,7 +719,7 @@ async def handle(update: Update):
 
         global_state["start_block"] = start_block
         global_state["epoch_start_ts"] = int(now_ist.timestamp())
-        record_manual_set(global_state, entered_block, current_block, start_block, reset_block, now_ist)
+        record_manual_set(global_state, entered_block, current_block, start_block, reset_block, now_ist, block_sec=block_sec)
 
         store[GLOBAL_KEY] = global_state
         store[CHAT_META_KEY][chat] = chat_meta
@@ -626,16 +744,12 @@ async def handle(update: Update):
         global_state = get_global_state(store)
         chat_meta = get_chat_meta(store, chat)
 
-        current_block = await get_current_block_height()
-        if current_block is None:
-            try:
-                await bot.delete_message(chat_id=int(chat), message_id=loading_msg.message_id)
-            except:
-                pass
-            await send_text(chat, "⚠️ Unable to fetch current block height.", forum=forum)
-            return
+        snapshot = await get_live_block_snapshot()
+        current_block = snapshot["currentHeight"]
+        block_sec = snapshot.get("sampleBlockSec") or global_state.get("last_block_sec") or AVG_BLOCK_TIME
+        global_state["last_block_sec"] = block_sec
 
-        sync_epoch_state(global_state, current_block)
+        sync_epoch_state(global_state, current_block, block_sec=block_sec)
 
         hist = global_state.get("history", [])
         if not hist:
@@ -656,7 +770,7 @@ async def handle(update: Update):
                     f"• Start Time: {h['date']} | {h['epoch_start_ist']} | UTC: {h['epoch_start_utc']}\n"
                     f"• Reset Block: {h['reset_block']:,}\n"
                     f"• Reset Time: {h['date']} | {h['reset_ist']} | UTC: {h['reset_utc']}\n"
-                    f"• Epoch Duration: {h.get('epoch_duration', format_duration(EPOCH_DURATION_SECONDS))}\n\n"
+                    f"• Epoch Duration: {h.get('epoch_duration', epoch_duration_text(block_sec))}\n\n"
                 )
             else:
                 out += (
@@ -665,7 +779,7 @@ async def handle(update: Update):
                     f"• Start Time: {h['date']} | {h['epoch_start_ist']} | UTC: {h['epoch_start_utc']}\n"
                     f"• Reset Block: {h['reset_block']:,}\n"
                     f"• Reset Time: {h['date']} | {h['reset_ist']} | UTC: {h['reset_utc']}\n"
-                    f"• Epoch Duration: {h.get('epoch_duration', format_duration(EPOCH_DURATION_SECONDS))}\n\n"
+                    f"• Epoch Duration: {h.get('epoch_duration', epoch_duration_text(block_sec))}\n\n"
                 )
 
         try:

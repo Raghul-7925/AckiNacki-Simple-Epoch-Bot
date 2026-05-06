@@ -638,15 +638,57 @@ async def handle(update: Update):
         sync_epoch_state(global_state, current_block)
 
         hist = global_state.get("history", [])
-        async def app(scope, receive, send):
+        if not hist:
+            try:
+                await bot.delete_message(chat_id=int(chat), message_id=loading_msg.message_id)
+            except:
+                pass
+            await send_text(chat, "📊 No epoch records yet.", forum=forum)
+            return
+
+        out = "📊 Daily Epoch History\n\n"
+        for h in hist[-30:]:
+            kind = h.get("kind", "manual_set")
+            if kind == "auto_reset":
+                out += (
+                    f"📅 Epoch {h.get('epoch_no', 202)} | Auto Reset\n"
+                    f"• Start Block: {h['epoch_start_block']:,}\n"
+                    f"• Start Time: {h['date']} | {h['epoch_start_ist']} | UTC: {h['epoch_start_utc']}\n"
+                    f"• Reset Block: {h['reset_block']:,}\n"
+                    f"• Reset Time: {h['date']} | {h['reset_ist']} | UTC: {h['reset_utc']}\n"
+                    f"• Epoch Duration: {h.get('epoch_duration', format_duration(EPOCH_DURATION_SECONDS))}\n\n"
+                )
+            else:
+                out += (
+                    f"📅 Epoch {h.get('epoch_no', 202)} | Manual Set\n"
+                    f"• Start Block: {h['epoch_start_block']:,}\n"
+                    f"• Start Time: {h['date']} | {h['epoch_start_ist']} | UTC: {h['epoch_start_utc']}\n"
+                    f"• Reset Block: {h['reset_block']:,}\n"
+                    f"• Reset Time: {h['date']} | {h['reset_ist']} | UTC: {h['reset_utc']}\n"
+                    f"• Epoch Duration: {h.get('epoch_duration', format_duration(EPOCH_DURATION_SECONDS))}\n\n"
+                )
+
+        try:
+            await bot.delete_message(chat_id=int(chat), message_id=loading_msg.message_id)
+        except:
+            pass
+
+        store[GLOBAL_KEY] = global_state
+        store[CHAT_META_KEY][chat] = chat_meta
+        await save_data_async(store, sha)
+
+        await send_text(chat, out, forum=forum)
+        return
+
+
+async def app(scope, receive, send):
     if scope["type"] == "http":
         body = b""
         more = True
-
         while more:
-            message = await receive()
-            body += message.get("body", b"")
-            more = message.get("more_body", False)
+            m = await receive()
+            body += m.get("body", b"")
+            more = m.get("more_body", False)
 
         try:
             data = json.loads(body.decode())
@@ -655,16 +697,5 @@ async def handle(update: Update):
         except Exception as e:
             print(e)
 
-        await send({
-            "type": "http.response.start",
-            "status": 200,
-            "headers": [
-                [b"content-type", b"text/plain"]
-            ]
-        })
-
-        await send({
-            "type": "http.response.body",
-            "body": b"ok"
-        })
-        
+        await send({"type": "http.response.start", "status": 200})
+        await send({"type": "http.response.body", "body": b"ok"})

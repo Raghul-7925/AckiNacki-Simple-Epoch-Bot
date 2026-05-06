@@ -178,6 +178,7 @@ def sync_epoch_state(state, current_block):
             "epoch_duration": format_duration(EPOCH_DURATION_SECONDS),
         })
 
+        state["epoch_start_ts"] = int(epoch_reset_dt.timestamp())
         state["start_block"] = reset
 
 
@@ -214,8 +215,13 @@ def calculate_epoch_stats(state, current_block):
     remaining = left * AVG_BLOCK_TIME
 
     epoch_no = get_epoch_no_from_start(start)
-    epoch_start_dt = get_epoch_start_dt(epoch_no)
-    reset_dt = epoch_start_dt + timedelta(seconds=EPOCH_DURATION_SECONDS)
+
+    if "epoch_start_ts" in state:
+        epoch_start_dt = datetime.fromtimestamp(int(state["epoch_start_ts"]), IST)
+    else:
+        epoch_start_dt = get_epoch_start_dt(epoch_no)
+
+    reset_dt = datetime.now(IST) + timedelta(seconds=remaining)
 
     t1 = epoch_start_dt
     t2 = t1 + timedelta(seconds=TIER_1_END * AVG_BLOCK_TIME)
@@ -276,7 +282,7 @@ async def build_dashboard(state, current_block):
     )
 
 
-async def update_pin_message(chat, state, time_left_text):
+async def update_pin_message(chat, state, time_left_text, forum=False):
     pin_id = state.get("pin_msg_id")
     if not pin_id:
         return
@@ -284,15 +290,19 @@ async def update_pin_message(chat, state, time_left_text):
     new_text = f"⏳ Time to next epoch: {time_left_text}"
 
     try:
+        kw = {}
+        if forum:
+            kw["message_thread_id"] = TARGET_THREAD_ID
+
         await bot.edit_message_text(
             chat_id=int(chat),
             message_id=int(pin_id),
             text=new_text,
-            reply_markup=ReplyKeyboardRemove(),
+            **kw,
         )
         return
-    except:
-        pass
+    except Exception as e:
+        print("PIN EDIT ERROR:", e)
 
     try:
         await bot.unpin_chat_message(chat_id=int(chat))
@@ -328,7 +338,7 @@ async def send_dashboard(chat, state, current_block, forum=False):
     state["msg_id"] = msg.message_id
 
     s = calculate_epoch_stats(state, current_block)
-    await update_pin_message(chat, state, format_duration(s["remaining"]))
+    await update_pin_message(chat, state, format_duration(s["remaining"]), forum=forum)
 
 
 async def handle(update: Update):
@@ -369,7 +379,7 @@ async def handle(update: Update):
             state["seen_start"] = True
 
         loading_msg = await send_text(chat, "⏳ Updating.....", forum=forum)
-        await asyncio.sleep(0.5)
+        await asyncio.sleep(2)
         try:
             await bot.delete_message(chat_id=int(chat), message_id=loading_msg.message_id)
         except:
@@ -382,7 +392,7 @@ async def handle(update: Update):
 
     if low in ["/status", "📊 status"]:
         loading_msg = await send_text(chat, "⏳ Updating.....", forum=forum)
-        await asyncio.sleep(0.5)
+        await asyncio.sleep(1)
         try:
             await bot.delete_message(chat_id=int(chat), message_id=loading_msg.message_id)
         except:
@@ -473,6 +483,7 @@ async def handle(update: Update):
             reset_block = entered_block + BLOCKS_PER_EPOCH
 
         state["start_block"] = start_block
+        state["epoch_start_ts"] = int(now_ist.timestamp())
         record_manual_set(state, entered_block, current_block, start_block, reset_block, now_ist)
 
         store[chat] = state

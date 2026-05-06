@@ -79,6 +79,14 @@ def save_data(store, sha):
     urlopen(req)
 
 
+async def load_data_async():
+    return await asyncio.to_thread(load_data)
+
+
+async def save_data_async(store, sha):
+    return await asyncio.to_thread(save_data, store, sha)
+
+
 async def send_text(chat_id, text, forum=False):
     kw = {"reply_markup": ReplyKeyboardRemove()}
     if forum:
@@ -221,6 +229,14 @@ def format_time(dt):
     return f"{dt.strftime('%d %b %I:%M %p')} IST [UTC: {dt.astimezone(UTC).strftime('%H:%M')}]"
 
 
+def get_current_reward_tier(in_epoch):
+    if in_epoch < TIER_1_END:
+        return "Tier 1 - High Reward (<6k taps)"
+    if in_epoch < TIER_2_END:
+        return "Tier 2 - Medium Reward (>6k taps)"
+    return "Tier 3 - Low Reward( > 12k taps)"
+
+
 def sync_epoch_state(state, current_block):
     while True:
         start = int(state["start_block"])
@@ -291,15 +307,7 @@ def calculate_epoch_stats(state, current_block):
 
     reset_dt = datetime.now(IST) + timedelta(seconds=remaining)
 
-    t1 = epoch_start_dt
-    t2 = t1 + timedelta(seconds=TIER_1_END * AVG_BLOCK_TIME)
-    t3 = t1 + timedelta(seconds=TIER_2_END * AVG_BLOCK_TIME)
-
-    tier = (
-        "Tier 1 (High reward)" if in_epoch < TIER_1_END else
-        "Tier 2 (Medium reward)" if in_epoch < TIER_2_END else
-        "Tier 3 (Low reward)"
-    )
+    tier = get_current_reward_tier(in_epoch)
 
     return {
         "epoch_no": epoch_no,
@@ -311,9 +319,7 @@ def calculate_epoch_stats(state, current_block):
         "elapsed": elapsed,
         "remaining": remaining,
         "reset_time": reset_dt,
-        "t1": t1,
-        "t2": t2,
-        "t3": t3,
+        "epoch_start_dt": epoch_start_dt,
         "tier": tier,
     }
 
@@ -335,19 +341,25 @@ async def build_dashboard(global_state, current_block):
         f"🔁 Reset Estimation\n"
         f"• {format_time(s['reset_time'])}\n\n"
 
-        f"🏆 Reward Tiers\n\n"
-        f"Tier 1 (High Reward) 🥇\n"
-        f"• Start: {format_time(s['t1'])}\n\n"
-
-        f"Tier 2 (Medium Reward) 🥈\n"
-        f"• Start: {format_time(s['t2'])}\n\n"
-
-        f"Tier 3 (Low Reward) 🥉\n"
-        f"• Start: {format_time(s['t3'])}\n\n"
-
-        f"📈 Current Status\n"
+        f"🏆 Current Reward Tier\n"
         f"• {s['tier']}"
     )
+
+
+async def animate_message(chat, message_id, texts, forum=False, delay=0.2):
+    if not texts:
+        return
+
+    for t in texts[1:]:
+        await asyncio.sleep(delay)
+        try:
+            await bot.edit_message_text(
+                chat_id=int(chat),
+                message_id=int(message_id),
+                text=t,
+            )
+        except:
+            pass
 
 
 async def update_pin_message(chat, meta, global_state, time_left_text, forum=False):
@@ -412,7 +424,7 @@ async def handle(update: Update):
     chat = str(update.effective_chat.id)
     forum = bool(getattr(update.effective_chat, "is_forum", False))
 
-    store, sha = load_data()
+    store, sha = await load_data_async()
     global_state = get_global_state(store)
     chat_meta = get_chat_meta(store, chat)
 
@@ -441,8 +453,14 @@ async def handle(update: Update):
             await send_text(chat, "👋 Welcome to Epoch Helper Bot!", forum=forum)
             chat_meta["seen_start"] = True
 
-        loading_msg = await send_text(chat, "⏳ Updating.....", forum=forum)
-        await asyncio.sleep(2)
+        loading_msg = await send_text(chat, "📡 Connecting to blockchain...", forum=forum)
+        await animate_message(
+            chat,
+            loading_msg.message_id,
+            ["📡 Connecting to blockchain...", "🔄 Initializing epoch state...", "✅ Sync complete..."],
+            forum=forum,
+            delay=0.2,
+        )
         try:
             await bot.delete_message(chat_id=int(chat), message_id=loading_msg.message_id)
         except:
@@ -452,36 +470,66 @@ async def handle(update: Update):
 
         store[GLOBAL_KEY] = global_state
         store[CHAT_META_KEY][chat] = chat_meta
-        save_data(store, sha)
+        await save_data_async(store, sha)
         return
 
     if low in ["/status", "📊 status"]:
-        loading_msg = await send_text(chat, "⏳ Updating.....", forum=forum)
-        await asyncio.sleep(1)
-        try:
-            await bot.delete_message(chat_id=int(chat), message_id=loading_msg.message_id)
-        except:
-            pass
+        block_task = asyncio.create_task(get_current_block_height())
 
-        current_block = await get_current_block_height()
+        loading_msg = await send_text(chat, "📡 Connecting to blockchain...", forum=forum)
+        await animate_message(
+            chat,
+            loading_msg.message_id,
+            ["📡 Connecting to blockchain...", "🔄 Syncing live epoch data...", "📊 Building dashboard..."],
+            forum=forum,
+            delay=0.2,
+        )
+
+        current_block = await block_task
         if current_block is None:
+            try:
+                await bot.delete_message(chat_id=int(chat), message_id=loading_msg.message_id)
+            except:
+                pass
             await send_text(chat, "⚠️ Unable to fetch current block height.", forum=forum)
             return
 
         sync_epoch_state(global_state, current_block)
+
+        try:
+            await bot.delete_message(chat_id=int(chat), message_id=loading_msg.message_id)
+        except:
+            pass
+
         await send_dashboard(chat, chat_meta, global_state, current_block, forum=forum)
 
         store[GLOBAL_KEY] = global_state
         store[CHAT_META_KEY][chat] = chat_meta
-        save_data(store, sha)
+        await save_data_async(store, sha)
         return
 
     if low in ["/blocks", "🔺 block height"]:
-        b = await get_current_block_height()
+        block_task = asyncio.create_task(get_current_block_height())
+
+        loading_msg = await send_text(chat, "📡 Connecting to blockchain...", forum=forum)
+        await animate_message(
+            chat,
+            loading_msg.message_id,
+            ["📡 Connecting to blockchain...", "🔍 Fetching data...", "📖 Reading live block height..."],
+            forum=forum,
+            delay=0.2,
+        )
+
+        b = await block_task
+        try:
+            await bot.delete_message(chat_id=int(chat), message_id=loading_msg.message_id)
+        except:
+            pass
+
         if b is None:
             await send_text(chat, "⚠️ Unable to fetch current block height.", forum=forum)
         else:
-            await send_text(chat, f"Block height {b:,}", forum=forum)
+            await send_text(chat, f"📦 Block height is {b:,}", forum=forum)
         return
 
     if low in ["/help", "ℹ️ help"]:
@@ -519,7 +567,7 @@ async def handle(update: Update):
 
         store[GLOBAL_KEY] = global_state
         store[CHAT_META_KEY][chat] = chat_meta
-        save_data(store, sha)
+        await save_data_async(store, sha)
         return
 
     if low.startswith("/setblock"):
@@ -557,68 +605,37 @@ async def handle(update: Update):
 
         store[GLOBAL_KEY] = global_state
         store[CHAT_META_KEY][chat] = chat_meta
-        save_data(store, sha)
+        await save_data_async(store, sha)
 
         await send_text(chat, f"✅ Epoch start block set to: {entered_block:,}", forum=forum)
         return
 
     if low in ["/analysis", "📈 analysis"]:
+        load_task = asyncio.create_task(load_data_async())
+
+        loading_msg = await send_text(chat, "📡 Connecting to blockchain...", forum=forum)
+        await animate_message(
+            chat,
+            loading_msg.message_id,
+            ["📡 Connecting to blockchain...", "📚 Collecting epoch history...", "📊 Building analysis report..."],
+            forum=forum,
+            delay=0.2,
+        )
+
+        store, sha = await load_task
+        global_state = get_global_state(store)
+        chat_meta = get_chat_meta(store, chat)
+
         current_block = await get_current_block_height()
         if current_block is None:
+            try:
+                await bot.delete_message(chat_id=int(chat), message_id=loading_msg.message_id)
+            except:
+                pass
             await send_text(chat, "⚠️ Unable to fetch current block height.", forum=forum)
             return
 
         sync_epoch_state(global_state, current_block)
 
         hist = global_state.get("history", [])
-        if not hist:
-            await send_text(chat, "📊 No epoch records yet.", forum=forum)
-            return
-
-        out = "📊 Daily Epoch History\n\n"
-        for h in hist[-30:]:
-            kind = h.get("kind", "manual_set")
-            if kind == "auto_reset":
-                out += (
-                    f"📅 Epoch {h.get('epoch_no', 202)} | Auto Reset\n"
-                    f"• Start Block: {h['epoch_start_block']:,}\n"
-                    f"• Start Time: {h['date']} | {h['epoch_start_ist']} | UTC: {h['epoch_start_utc']}\n"
-                    f"• Reset Block: {h['reset_block']:,}\n"
-                    f"• Reset Time: {h['date']} | {h['reset_ist']} | UTC: {h['reset_utc']}\n"
-                    f"• Epoch Duration: {h.get('epoch_duration', format_duration(EPOCH_DURATION_SECONDS))}\n\n"
-                )
-            else:
-                out += (
-                    f"📅 Epoch {h.get('epoch_no', 202)} | Manual Set\n"
-                    f"• Start Block: {h['epoch_start_block']:,}\n"
-                    f"• Start Time: {h['date']} | {h['epoch_start_ist']} | UTC: {h['epoch_start_utc']}\n"
-                    f"• Reset Block: {h['reset_block']:,}\n"
-                    f"• Reset Time: {h['date']} | {h['reset_ist']} | UTC: {h['reset_utc']}\n"
-                    f"• Epoch Duration: {h.get('epoch_duration', format_duration(EPOCH_DURATION_SECONDS))}\n\n"
-                )
-
-        store[GLOBAL_KEY] = global_state
-        store[CHAT_META_KEY][chat] = chat_meta
-        save_data(store, sha)
-        await send_text(chat, out, forum=forum)
-        return
-
-
-async def app(scope, receive, send):
-    if scope["type"] == "http":
-        body = b""
-        more = True
-        while more:
-            m = await receive()
-            body += m.get("body", b"")
-            more = m.get("more_body", False)
-
-        try:
-            data = json.loads(body.decode())
-            update = Update.de_json(data, bot)
-            await handle(update)
-        except Exception as e:
-            print(e)
-
-        await send({"type": "http.response.start", "status": 200})
-        await send({"type": "http.response.body", "body": b"ok"})
+        

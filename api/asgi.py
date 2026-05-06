@@ -1,4 +1,5 @@
 import base64
+import copy
 import json
 import os
 import asyncio
@@ -37,6 +38,9 @@ GRAPHQL_URL_PRIMARY = "https://mainnet.ackinacki.org/graphql"
 GRAPHQL_URL_FALLBACK = "https://mainnet-cf.ackinacki.org/graphql"
 
 GITHUB_API = f"https://api.github.com/repos/{GITHUB_REPO}/contents/{GITHUB_FILE}"
+
+GLOBAL_KEY = "global_epoch_state"
+CHAT_META_KEY = "chat_meta"
 
 
 def gh_headers():
@@ -118,11 +122,75 @@ async def get_current_block_height():
     return await fetch_block_height(GRAPHQL_URL_FALLBACK)
 
 
-def ensure_state_defaults(state):
+def ensure_global_defaults(state):
     if "start_block" not in state:
         state["start_block"] = EPOCH_RESET_BLOCK
+    if "epoch_start_ts" not in state:
+        state["epoch_start_ts"] = int(EPOCH_202_START_IST.timestamp())
     if "history" not in state or not isinstance(state["history"], list):
         state["history"] = []
+    state.pop("msg_id", None)
+    state.pop("pin_msg_id", None)
+    state.pop("seen_start", None)
+
+
+def ensure_chat_defaults(meta):
+    if "msg_id" not in meta:
+        meta["msg_id"] = None
+    if "pin_msg_id" not in meta:
+        meta["pin_msg_id"] = None
+    if "seen_start" not in meta:
+        meta["seen_start"] = False
+
+
+def choose_global_candidate(store):
+    best = None
+    best_score = (-1, -1, -1)
+
+    for k, v in store.items():
+        if k in (GLOBAL_KEY, CHAT_META_KEY):
+            continue
+        if isinstance(v, dict) and ("start_block" in v or "history" in v or "epoch_start_ts" in v):
+            sb = int(v.get("start_block", 0) or 0)
+            hl = len(v.get("history", [])) if isinstance(v.get("history"), list) else 0
+            ts = int(v.get("epoch_start_ts", 0) or 0)
+            score = (sb, hl, ts)
+            if score > best_score:
+                best_score = score
+                best = copy.deepcopy(v)
+
+    return best
+
+
+def get_global_state(store):
+    if GLOBAL_KEY not in store or not isinstance(store.get(GLOBAL_KEY), dict):
+        candidate = choose_global_candidate(store)
+        if candidate is None:
+            candidate = {}
+        store[GLOBAL_KEY] = candidate
+
+    if CHAT_META_KEY not in store or not isinstance(store.get(CHAT_META_KEY), dict):
+        store[CHAT_META_KEY] = {}
+
+    ensure_global_defaults(store[GLOBAL_KEY])
+    return store[GLOBAL_KEY]
+
+
+def get_chat_meta(store, chat):
+    chat_meta = store.setdefault(CHAT_META_KEY, {})
+    meta = chat_meta.get(chat)
+
+    if not isinstance(meta, dict):
+        meta = {}
+        old = store.get(chat)
+        if isinstance(old, dict):
+            for key in ("msg_id", "pin_msg_id", "seen_start"):
+                if key in old:
+                    meta[key] = old[key]
+        chat_meta[chat] = meta
+
+    ensure_chat_defaults(meta)
+    return meta
 
 
 def add_history(state, item):
@@ -250,8 +318,8 @@ def calculate_epoch_stats(state, current_block):
     }
 
 
-async def build_dashboard(state, current_block):
-    s = calculate_epoch_stats(state, current_block)
+async def build_dashboard(global_state, current_block):
+    s = calculate_epoch_stats(global_state, current_block)
 
     return (
         f"⏳ Timer Since Epoch Reset: {format_duration(s['elapsed'])}\n"
@@ -282,23 +350,18 @@ async def build_dashboard(state, current_block):
     )
 
 
-async def update_pin_message(chat, state, time_left_text, forum=False):
-    pin_id = state.get("pin_msg_id")
+async def update_pin_message(chat, meta, global_state, time_left_text, forum=False):
+    pin_id = meta.get("pin_msg_id")
     if not pin_id:
         return
 
     new_text = f"⏳ Time to next epoch: {time_left_text}"
 
     try:
-        kw = {}
-        if forum:
-            kw["message_thread_id"] = TARGET_THREAD_ID
-
         await bot.edit_message_text(
             chat_id=int(chat),
             message_id=int(pin_id),
             text=new_text,
-            **kw,
         )
         return
     except Exception as e:
@@ -314,35 +377,31 @@ async def update_pin_message(chat, state, time_left_text, forum=False):
         if forum:
             kw["message_thread_id"] = TARGET_THREAD_ID
 
-        msg = await bot.send_message(
-            int(chat),
-            new_text,
-            **kw,
-        )
+        msg = await bot.send_message(int(chat), new_text, **kw)
         await bot.pin_chat_message(
             chat_id=int(chat),
             message_id=msg.message_id,
             disable_notification=True,
         )
-        state["pin_msg_id"] = msg.message_id
+        meta["pin_msg_id"] = msg.message_id
     except:
         pass
 
 
-async def send_dashboard(chat, state, current_block, forum=False):
-    text = await build_dashboard(state, current_block)
+async def send_dashboard(chat, meta, global_state, current_block, forum=False):
+    text = await build_dashboard(global_state, current_block)
 
-    if state.get("msg_id"):
+    if meta.get("msg_id"):
         try:
-            await bot.delete_message(chat_id=int(chat), message_id=int(state["msg_id"]))
+            await bot.delete_message(chat_id=int(chat), message_id=int(meta["msg_id"]))
         except:
             pass
 
     msg = await send_text(chat, text, forum=forum)
-    state["msg_id"] = msg.message_id
+    meta["msg_id"] = msg.message_id
 
-    s = calculate_epoch_stats(state, current_block)
-    await update_pin_message(chat, state, format_duration(s["remaining"]), forum=forum)
+    s = calculate_epoch_stats(global_state, current_block)
+    await update_pin_message(chat, meta, global_state, format_duration(s["remaining"]), forum=forum)
 
 
 async def handle(update: Update):
@@ -354,8 +413,8 @@ async def handle(update: Update):
     forum = bool(getattr(update.effective_chat, "is_forum", False))
 
     store, sha = load_data()
-    state = store.get(chat, {})
-    ensure_state_defaults(state)
+    global_state = get_global_state(store)
+    chat_meta = get_chat_meta(store, chat)
 
     if not update.message:
         return
@@ -364,23 +423,23 @@ async def handle(update: Update):
     low = text.lower()
 
     if low in ["/start", "🔄 refresh"]:
-        if state.get("pin_msg_id"):
+        if chat_meta.get("pin_msg_id"):
             try:
                 await bot.unpin_chat_message(chat_id=int(chat))
             except:
                 pass
-            state.pop("pin_msg_id", None)
+            chat_meta["pin_msg_id"] = None
 
         current_block = await get_current_block_height()
         if current_block is None:
             await send_text(chat, "⚠️ Unable to fetch current block height.", forum=forum)
             return
 
-        sync_epoch_state(state, current_block)
+        sync_epoch_state(global_state, current_block)
 
-        if low == "/start" and not state.get("seen_start"):
+        if low == "/start" and not chat_meta.get("seen_start"):
             await send_text(chat, "👋 Welcome to Epoch Helper Bot!", forum=forum)
-            state["seen_start"] = True
+            chat_meta["seen_start"] = True
 
         loading_msg = await send_text(chat, "⏳ Updating.....", forum=forum)
         await asyncio.sleep(2)
@@ -389,8 +448,10 @@ async def handle(update: Update):
         except:
             pass
 
-        await send_dashboard(chat, state, current_block, forum=forum)
-        store[chat] = state
+        await send_dashboard(chat, chat_meta, global_state, current_block, forum=forum)
+
+        store[GLOBAL_KEY] = global_state
+        store[CHAT_META_KEY][chat] = chat_meta
         save_data(store, sha)
         return
 
@@ -407,9 +468,11 @@ async def handle(update: Update):
             await send_text(chat, "⚠️ Unable to fetch current block height.", forum=forum)
             return
 
-        sync_epoch_state(state, current_block)
-        await send_dashboard(chat, state, current_block, forum=forum)
-        store[chat] = state
+        sync_epoch_state(global_state, current_block)
+        await send_dashboard(chat, chat_meta, global_state, current_block, forum=forum)
+
+        store[GLOBAL_KEY] = global_state
+        store[CHAT_META_KEY][chat] = chat_meta
         save_data(store, sha)
         return
 
@@ -438,8 +501,8 @@ async def handle(update: Update):
             await send_text(chat, "⚠️ Unable to fetch current block height.", forum=forum)
             return
 
-        sync_epoch_state(state, current_block)
-        s = calculate_epoch_stats(state, current_block)
+        sync_epoch_state(global_state, current_block)
+        s = calculate_epoch_stats(global_state, current_block)
 
         msg = await send_text(chat, f"⏳ Time to next epoch: {format_duration(s['remaining'])}", forum=forum)
 
@@ -452,8 +515,10 @@ async def handle(update: Update):
         except:
             pass
 
-        state["pin_msg_id"] = msg.message_id
-        store[chat] = state
+        chat_meta["pin_msg_id"] = msg.message_id
+
+        store[GLOBAL_KEY] = global_state
+        store[CHAT_META_KEY][chat] = chat_meta
         save_data(store, sha)
         return
 
@@ -486,11 +551,12 @@ async def handle(update: Update):
             start_block = entered_block
             reset_block = entered_block + BLOCKS_PER_EPOCH
 
-        state["start_block"] = start_block
-        state["epoch_start_ts"] = int(now_ist.timestamp())
-        record_manual_set(state, entered_block, current_block, start_block, reset_block, now_ist)
+        global_state["start_block"] = start_block
+        global_state["epoch_start_ts"] = int(now_ist.timestamp())
+        record_manual_set(global_state, entered_block, current_block, start_block, reset_block, now_ist)
 
-        store[chat] = state
+        store[GLOBAL_KEY] = global_state
+        store[CHAT_META_KEY][chat] = chat_meta
         save_data(store, sha)
 
         await send_text(chat, f"✅ Epoch start block set to: {entered_block:,}", forum=forum)
@@ -502,9 +568,9 @@ async def handle(update: Update):
             await send_text(chat, "⚠️ Unable to fetch current block height.", forum=forum)
             return
 
-        sync_epoch_state(state, current_block)
+        sync_epoch_state(global_state, current_block)
 
-        hist = state.get("history", [])
+        hist = global_state.get("history", [])
         if not hist:
             await send_text(chat, "📊 No epoch records yet.", forum=forum)
             return
@@ -531,7 +597,8 @@ async def handle(update: Update):
                     f"• Epoch Duration: {h.get('epoch_duration', format_duration(EPOCH_DURATION_SECONDS))}\n\n"
                 )
 
-        store[chat] = state
+        store[GLOBAL_KEY] = global_state
+        store[CHAT_META_KEY][chat] = chat_meta
         save_data(store, sha)
         await send_text(chat, out, forum=forum)
         return

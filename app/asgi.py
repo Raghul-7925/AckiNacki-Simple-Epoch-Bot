@@ -725,7 +725,7 @@ async def handle(update: Update):
         store[CHAT_META_KEY][chat] = chat_meta
         await save_data_async(store, sha)
 
-        await send_text(chat, f"✅ Epoch start block set to: {entered_block:,}", forum=forum)
+        await send_text(chat, f"✅ Epoch block set to: {entered_block:,}", forum=forum)
         return
 
     if low in ["/analysis", "📈 analysis"]:

@@ -353,64 +353,120 @@ async def fetch_block_detail_by_hash(block_hash: str) -> dict | None:
         return None
 
 
-async def fetch_block_timestamp(block_height: int) -> tuple[int | None, str | None]:
+EXPLORER_BASE = "https://dev.acki.live/blocks"
+
+
+async def fetch_block_timestamp(block_height: int) -> tuple[int | None, str | None, str | None]:
     """
-    Returns (unix_timestamp, gen_utime_string) for a given block height.
+    Returns (unix_timestamp, gen_utime_string, block_hash) for a given block height.
 
-    Primary path (acki.live explorer method):
-      1. blockByHeight(thread_id, height) → hash
-      2. block(hash) → gen_utime + gen_utime_string
+    The epoch boundary blocks are EXACT numbers (epoch_no × 262000).
 
-    Fallback: range scan via seq_no filter (original strategy 1 & 2).
+    Strategy 1: blockByHeight(thread_id, height) → block(hash)
+    Strategy 2: blocks(seq_no ±5) { nodes { seq_no hash gen_utime } } → exact match
+    Strategy 3: Same with edges { node } — legacy schema fallback.
 
-    Returns (None, None) if everything fails.
+    Returns (None, None, None) if all strategies fail.
     """
-    # ── Primary: explorer 2-step ──────────────────────────────────────────
-    block_hash = await fetch_block_hash_by_height(block_height)
-    if block_hash:
-        detail = await fetch_block_detail_by_hash(block_hash)
+
+    async def _detail_from_hash(h):
+        """Fetch full block detail by hash. Returns (ts, tss, hash)."""
+        if not h:
+            return None, None, None
+        detail = await fetch_block_detail_by_hash(h)
         if detail:
             ts  = normalize_uint(detail.get("gen_utime"))
             tss = detail.get("gen_utime_string") or None
+            blk = detail.get("hash") or detail.get("id") or h
             if ts:
-                return ts, tss
+                return ts, tss, blk
+        return None, None, None
 
-    # ── Fallback: range scan ──────────────────────────────────────────────
-    def _best_from_edges(edges, target):
-        best, best_ts, best_tss = None, None, None
-        for edge in edges:
+    def _exact_node(nodes, target):
+        """Return the node dict whose seq_no exactly matches target."""
+        for node in (nodes or []):
+            if isinstance(node, dict) and normalize_uint(node.get("seq_no")) == target:
+                return node
+        return None
+
+    def _exact_node_from_edges(edges, target):
+        for edge in (edges or []):
             node = edge.get("node", {}) if isinstance(edge, dict) else {}
-            sn   = normalize_uint(node.get("seq_no"))
-            ts   = normalize_uint(node.get("gen_utime"))
-            tss  = node.get("gen_utime_string") or None
-            if sn > 0 and ts > 0:
-                d = abs(sn - target)
-                if best is None or d < best:
-                    best, best_ts, best_tss = d, ts, tss
-        return best_ts, best_tss
+            if normalize_uint(node.get("seq_no")) == target:
+                return node
+        return None
 
-    for window in (1, 100):
-        q = f"""
-        query {{
-            blockchain {{
-                blocks(seq_no: {{ start: {block_height - window}, end: {block_height + window} }}) {{
-                    edges {{ node {{ seq_no gen_utime gen_utime_string }} }}
-                }}
+    # ── Strategy 1: blockByHeight → block(hash) ───────────────────────────
+    try:
+        block_hash = await fetch_block_hash_by_height(block_height)
+        if block_hash:
+            ts, tss, blk = await _detail_from_hash(block_hash)
+            if ts:
+                return ts, tss, blk
+    except Exception as e:
+        print(f"fetch_block_timestamp S1({block_height}): {e}")
+
+    # ── Strategy 2: seq_no ±5 → nodes → exact match ───────────────────────
+    q_nodes = f"""
+    query {{
+        blockchain {{
+            blocks(seq_no: {{ start: {block_height - 5}, end: {block_height + 5} }}) {{
+                nodes {{ seq_no hash gen_utime gen_utime_string }}
             }}
         }}
-        """
-        try:
-            r     = await graphql_fetch(q)
-            edges = (r.get("json", {}).get("data", {})
-                      .get("blockchain", {}).get("blocks", {}).get("edges", []))
-            ts, tss = _best_from_edges(edges, block_height)
+    }}
+    """
+    try:
+        r    = await graphql_fetch(q_nodes)
+        nodes = (r.get("json", {}).get("data", {})
+                  .get("blockchain", {}).get("blocks", {}).get("nodes") or [])
+        node = _exact_node(nodes, block_height)
+        if node:
+            h = node.get("hash") or node.get("id")
+            if h:
+                ts, tss, blk = await _detail_from_hash(h)
+                if ts:
+                    return ts, tss, blk
+            # gen_utime may already be in the node
+            ts  = normalize_uint(node.get("gen_utime"))
+            tss = node.get("gen_utime_string") or None
+            blk = node.get("hash") or node.get("id") or None
             if ts:
-                return ts, tss
-        except Exception as e:
-            print(f"fetch_block_timestamp fallback w={window} ({block_height}): {e}")
+                return ts, tss, blk
+    except Exception as e:
+        print(f"fetch_block_timestamp S2({block_height}): {e}")
+
+    # ── Strategy 3: seq_no ±5 → edges → exact match ───────────────────────
+    q_edges = f"""
+    query {{
+        blockchain {{
+            blocks(seq_no: {{ start: {block_height - 5}, end: {block_height + 5} }}) {{
+                edges {{ node {{ seq_no hash gen_utime gen_utime_string }} }}
+            }}
+        }}
+    }}
+    """
+    try:
+        r     = await graphql_fetch(q_edges)
+        edges = (r.get("json", {}).get("data", {})
+                  .get("blockchain", {}).get("blocks", {}).get("edges") or [])
+        node = _exact_node_from_edges(edges, block_height)
+        if node:
+            h = node.get("hash") or node.get("id")
+            if h:
+                ts, tss, blk = await _detail_from_hash(h)
+                if ts:
+                    return ts, tss, blk
+            ts  = normalize_uint(node.get("gen_utime"))
+            tss = node.get("gen_utime_string") or None
+            blk = node.get("hash") or node.get("id") or None
+            if ts:
+                return ts, tss, blk
+    except Exception as e:
+        print(f"fetch_block_timestamp S3({block_height}): {e}")
 
     print(f"fetch_block_timestamp: all strategies failed for block {block_height}")
-    return None, None
+    return None, None, None
 
 
 async def graphql_fetch_vars(query: str, variables: dict, retries_per_endpoint=2):
@@ -677,16 +733,15 @@ def _parse_utime_string(raw: str | None) -> str | None:
 
 
 def build_analysis_record(epoch_no, start_ts, reset_ts,
-                          start_utime_str=None, reset_utime_str=None):
+                          start_utime_str=None, reset_utime_str=None,
+                          start_hash=None, reset_hash=None):
     """
-    Build a history record.  Stores partial records when only one
-    timestamp is available — never silently discards data.
+    Build a history record.
+    Stores partial records when only one timestamp is available.
     Returns None only when BOTH timestamps are missing.
 
-    New fields:
-      exact_start_time  — raw gen_utime_string from the API for start block
-      exact_reset_time  — raw gen_utime_string from the API for reset block
-      epoch_duration_seconds — integer seconds of real epoch duration
+    Fields include exact UTC times, IST times, duration in seconds,
+    and explorer URLs built from the block hashes.
     """
     if not start_ts and not reset_ts:
         return None
@@ -709,6 +764,9 @@ def build_analysis_record(epoch_no, start_ts, reset_ts,
         if reset_ts else "pending"
     )
 
+    start_url = f"{EXPLORER_BASE}/{start_hash}" if start_hash else None
+    reset_url = f"{EXPLORER_BASE}/{reset_hash}" if reset_hash else None
+
     return {
         "kind":                   "auto_reset",
         "epoch_no":               epoch_no,
@@ -722,19 +780,25 @@ def build_analysis_record(epoch_no, start_ts, reset_ts,
         "exact_reset_time":       exact_reset,
         "epoch_duration":         duration_str,
         "epoch_duration_seconds": duration_sec,
+        "start_hash":             start_hash,
+        "reset_hash":             reset_hash,
+        "start_url":              start_url,
+        "reset_url":              reset_url,
     }
 
 
 async def build_epoch_record(epoch_no):
     if epoch_no < 1:
         return None
-    (start_ts, start_tss), (reset_ts, reset_tss) = await asyncio.gather(
+    (start_ts, start_tss, start_hash), (reset_ts, reset_tss, reset_hash) = await asyncio.gather(
         fetch_block_timestamp(epoch_start_block(epoch_no)),
         fetch_block_timestamp(epoch_reset_block(epoch_no)),
     )
     return build_analysis_record(epoch_no, start_ts, reset_ts,
                                   start_utime_str=start_tss,
-                                  reset_utime_str=reset_tss)
+                                  reset_utime_str=reset_tss,
+                                  start_hash=start_hash,
+                                  reset_hash=reset_hash)
 
 
 ANALYSIS_EPOCH_COUNT = 3   # how many recent completed epochs /analysis fetches
@@ -792,12 +856,18 @@ def build_analysis_report(store, current_block=None, n=ANALYSIS_EPOCH_COUNT):
         if dur_sec and dur_display != "pending":
             h_val, m_val = dur_sec // 3600, (dur_sec % 3600) // 60
             dur_display = f"{h_val}h {m_val}m ({dur_sec:,}s)"
+
+        start_url = h.get("start_url")
+        reset_url = h.get("reset_url")
+        start_link = f"\n  🔗 {start_url}" if start_url else ""
+        reset_link = f"\n  🔗 {reset_url}" if reset_url else ""
+
         out += (
             f"📅 Epoch {h.get('epoch_no','?')} | Auto Reset\n"
-            f"• Start Block:      {h.get('start_block',0):,}\n"
+            f"• Start Block:      {h.get('start_block',0):,}{start_link}\n"
             f"• Start Time (IST): {h.get('start_fmt','pending')}\n"
             f"• Start Time (UTC): {h.get('exact_start_time', 'pending')}\n"
-            f"• Reset Block:      {h.get('reset_block',0):,}\n"
+            f"• Reset Block:      {h.get('reset_block',0):,}{reset_link}\n"
             f"• Reset Time (IST): {h.get('reset_fmt','pending')}\n"
             f"• Reset Time (UTC): {h.get('exact_reset_time', 'pending')}\n"
             f"• Epoch Duration:   {dur_display}\n\n"
@@ -813,12 +883,18 @@ def build_epoch_report(rec):
     if dur_sec and dur_display != "pending":
         h_val, m_val = dur_sec // 3600, (dur_sec % 3600) // 60
         dur_display = f"{h_val}h {m_val}m ({dur_sec:,}s exact)"
+
+    start_url = rec.get("start_url")
+    reset_url = rec.get("reset_url")
+    start_link = f"\n  🔗 {start_url}" if start_url else ""
+    reset_link = f"\n  🔗 {reset_url}" if reset_url else ""
+
     return (
         f"📅 Epoch {rec.get('epoch_no','?')} | Auto Reset\n"
-        f"• Start Block:       {rec.get('start_block',0):,}\n"
+        f"• Start Block:       {rec.get('start_block',0):,}{start_link}\n"
         f"• Start Time (IST):  {rec.get('start_fmt','pending')}\n"
         f"• Start Time (UTC):  {rec.get('exact_start_time', 'pending')}\n"
-        f"• Reset Block:       {rec.get('reset_block',0):,}\n"
+        f"• Reset Block:       {rec.get('reset_block',0):,}{reset_link}\n"
         f"• Reset Time (IST):  {rec.get('reset_fmt','pending')}\n"
         f"• Reset Time (UTC):  {rec.get('exact_reset_time', 'pending')}\n"
         f"• Epoch Duration:    {dur_display}"
@@ -1069,10 +1145,12 @@ async def handle(update: Update):
         if not rec:
             await send_text(
                 chat,
-                f"⚠️ Could not fetch timestamps for Epoch {epoch_no} from the blockchain.\n"
+                f"⚠️ Epoch {epoch_no} — timestamps unavailable\n\n"
                 f"• Start Block: {epoch_start_block(epoch_no):,}\n"
-                f"• Reset Block: {epoch_reset_block(epoch_no):,}\n"
-                f"Timestamps unavailable — the node may not index this range.",
+                f"• Reset Block: {epoch_reset_block(epoch_no):,}\n\n"
+                f"The node could not resolve these blocks.\n"
+                f"This can happen for very old epochs or during node sync.\n"
+                f"Try again in a moment or use a more recent epoch number.",
                 forum=forum,
             )
             return

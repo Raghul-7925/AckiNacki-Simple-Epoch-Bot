@@ -452,45 +452,47 @@ async def fetch_block_timestamp(block_height: int) -> tuple[int | None, str | No
         print(f"fetch_block_timestamp S1({block_height}): {e}")
 
     # ── Strategy 2 & 3: seq_no range → exact node → chain_order / gen_utime
-    # We request both edges and nodes shapes in separate queries.
-    # chain_order is requested so we can decode the timestamp directly
-    # from it even if gen_utime is missing — per official Acki Nacki docs.
-    for use_edges, shape in [(True, "edges { node { seq_no hash chain_order gen_utime gen_utime_string } }"),
+    # Tried with both edges and nodes schema shapes.
+    # chain_order lets us decode timestamp even if gen_utime is absent.
+    # Windows: ±5 first (cheap), then ±50 for older blocks the node may
+    # store with slight offset from our expected seq_no.
+    for use_edges, shape in [(True,  "edges { node { seq_no hash chain_order gen_utime gen_utime_string } }"),
                               (False, "nodes { seq_no hash chain_order gen_utime gen_utime_string }")]:
-        q = f"""
-        query {{
-            blockchain {{
-                blocks(seq_no: {{ start: {block_height - 5}, end: {block_height + 5} }}) {{
-                    {shape}
+        for window in (5, 50):
+            q = f"""
+            query {{
+                blockchain {{
+                    blocks(seq_no: {{ start: {block_height - window}, end: {block_height + window} }}) {{
+                        {shape}
+                    }}
                 }}
             }}
-        }}
-        """
-        label = "S2-edges" if use_edges else "S3-nodes"
-        try:
-            r       = await graphql_fetch(q)
-            bdata   = (r.get("json", {}).get("data", {})
-                        .get("blockchain", {}).get("blocks", {}) or {})
-            items   = bdata.get("edges" if use_edges else "nodes") or []
-            node    = _find_exact(items, block_height, use_edges=use_edges)
-            if not node:
-                continue
+            """
+            label = f"S{'2' if use_edges else '3'}-{'edges' if use_edges else 'nodes'}-w{window}"
+            try:
+                r     = await graphql_fetch(q)
+                bdata = (r.get("json", {}).get("data", {})
+                          .get("blockchain", {}).get("blocks", {}) or {})
+                items = bdata.get("edges" if use_edges else "nodes") or []
+                node  = _find_exact(items, block_height, use_edges=use_edges)
+                if not node:
+                    continue
 
-            ts, tss, blk = _extract_from_node(node)
+                ts, tss, blk = _extract_from_node(node)
 
-            # If we have a hash, fetch full detail for gen_utime_string
-            if blk and not tss:
-                detail = await fetch_block_detail_by_hash(blk)
-                if detail:
-                    ts2  = normalize_uint(detail.get("gen_utime"))
-                    tss2 = detail.get("gen_utime_string") or None
-                    if ts2:
-                        ts, tss = ts2, tss2
+                # Fetch full detail for gen_utime_string if we have hash but no tss
+                if blk and not tss:
+                    detail = await fetch_block_detail_by_hash(blk)
+                    if detail:
+                        ts2  = normalize_uint(detail.get("gen_utime"))
+                        tss2 = detail.get("gen_utime_string") or None
+                        if ts2:
+                            ts, tss = ts2, tss2
 
-            if ts:
-                return ts, tss, blk
-        except Exception as e:
-            print(f"fetch_block_timestamp {label}({block_height}): {e}")
+                if ts:
+                    return ts, tss, blk
+            except Exception as e:
+                print(f"fetch_block_timestamp {label}({block_height}): {e}")
 
     print(f"fetch_block_timestamp: all strategies failed for block {block_height}")
     return None, None, None
@@ -814,13 +816,29 @@ def build_analysis_record(epoch_no, start_ts, reset_ts,
     }
 
 
-async def build_epoch_record(epoch_no):
+async def build_epoch_record(epoch_no, prefetch_reset=None):
+    """
+    Build a record for epoch_no.
+
+    prefetch_reset: optional (ts, tss, hash) tuple for the reset block,
+    used when the caller already resolved epoch_no+1's start block
+    (which is the same block as epoch_no's reset block — no double fetch).
+    """
     if epoch_no < 1:
         return None
-    (start_ts, start_tss, start_hash), (reset_ts, reset_tss, reset_hash) = await asyncio.gather(
-        fetch_block_timestamp(epoch_start_block(epoch_no)),
-        fetch_block_timestamp(epoch_reset_block(epoch_no)),
-    )
+
+    if prefetch_reset:
+        reset_data = prefetch_reset
+        start_data = await fetch_block_timestamp(epoch_start_block(epoch_no))
+    else:
+        start_data, reset_data = await asyncio.gather(
+            fetch_block_timestamp(epoch_start_block(epoch_no)),
+            fetch_block_timestamp(epoch_reset_block(epoch_no)),
+        )
+
+    start_ts, start_tss, start_hash = start_data
+    reset_ts, reset_tss, reset_hash = reset_data
+
     return build_analysis_record(epoch_no, start_ts, reset_ts,
                                   start_utime_str=start_tss,
                                   reset_utime_str=reset_tss,
@@ -835,30 +853,55 @@ async def ensure_last_n_epochs(store, current_block, n=ANALYSIS_EPOCH_COUNT):
     """
     Fetch (and cache) the last n completed epochs only.
     Already-cached records are reused; missing ones are fetched fresh.
+
+    Optimisation: epoch N's reset_block == epoch N+1's start_block (same number).
+    So we fetch each boundary block only once and share across adjacent epochs.
     """
     if not isinstance(store.get("history"), list):
         store["history"] = []
 
     existing      = {normalize_uint(x.get("epoch_no")) for x in store["history"] if isinstance(x, dict)}
     current_epoch = epoch_no_from_block(current_block)
-    last_done     = current_epoch - 1   # most recently completed epoch
+    last_done     = current_epoch - 1
 
     if last_done < 1:
         return False
 
     target_epochs = [en for en in range(last_done, max(0, last_done - n), -1) if en >= 1]
+    missing       = [en for en in target_epochs if en not in existing]
+
+    if not missing:
+        return False
+
+    # Build a cache of block-height → (ts, tss, hash) so shared boundary blocks
+    # (reset of epoch N == start of epoch N+1) are only fetched once.
+    block_cache: dict = {}
+
+    async def get_block(height):
+        if height not in block_cache:
+            block_cache[height] = await fetch_block_timestamp(height)
+        return block_cache[height]
 
     changed = False
-    for en in target_epochs:
-        if en in existing:
-            continue
-        rec = await build_epoch_record(en)
+    for en in missing:
+        start_h = epoch_start_block(en)
+        reset_h = epoch_reset_block(en)
+        start_data, reset_data = await asyncio.gather(get_block(start_h), get_block(reset_h))
+        start_ts, start_tss, start_hash = start_data
+        reset_ts, reset_tss, reset_hash = reset_data
+        rec = build_analysis_record(en, start_ts, reset_ts,
+                                     start_utime_str=start_tss,
+                                     reset_utime_str=reset_tss,
+                                     start_hash=start_hash,
+                                     reset_hash=reset_hash)
         if rec:
             store["history"].append(rec)
             changed = True
 
     store["history"].sort(key=lambda x: normalize_uint(x.get("epoch_no")))
     return changed
+
+
 
 
 def build_analysis_report(store, current_block=None, n=ANALYSIS_EPOCH_COUNT):
@@ -886,17 +929,15 @@ def build_analysis_report(store, current_block=None, n=ANALYSIS_EPOCH_COUNT):
 
         start_url = h.get("start_url")
         reset_url = h.get("reset_url")
-        start_link = f"\n  🔗 {start_url}" if start_url else ""
-        reset_link = f"\n  🔗 {reset_url}" if reset_url else ""
+        start_link = f" [Block Info 🔗]({start_url})" if start_url else ""
+        reset_link = f" [Block Info 🔗]({reset_url})" if reset_url else ""
 
         out += (
             f"📅 Epoch {h.get('epoch_no','?')} | Auto Reset\n"
             f"• Start Block:      {h.get('start_block',0):,}{start_link}\n"
-            f"• Start Time (IST): {h.get('start_fmt','pending')}\n"
-            f"• Start Time (UTC): {h.get('exact_start_time', 'pending')}\n"
+            f"• Start Time:       {h.get('start_fmt','pending')}\n"
             f"• Reset Block:      {h.get('reset_block',0):,}{reset_link}\n"
-            f"• Reset Time (IST): {h.get('reset_fmt','pending')}\n"
-            f"• Reset Time (UTC): {h.get('exact_reset_time', 'pending')}\n"
+            f"• Reset Time:       {h.get('reset_fmt','pending')}\n"
             f"• Epoch Duration:   {dur_display}\n\n"
         )
     return out.rstrip()
@@ -913,17 +954,16 @@ def build_epoch_report(rec):
 
     start_url = rec.get("start_url")
     reset_url = rec.get("reset_url")
-    start_link = f"\n  🔗 {start_url}" if start_url else ""
-    reset_link = f"\n  🔗 {reset_url}" if reset_url else ""
+    # Telegram inline hyperlink: [text](url)
+    start_link = f" [Block Info 🔗]({start_url})" if start_url else ""
+    reset_link = f" [Block Info 🔗]({reset_url})" if reset_url else ""
 
     return (
         f"📅 Epoch {rec.get('epoch_no','?')} | Auto Reset\n"
         f"• Start Block:       {rec.get('start_block',0):,}{start_link}\n"
-        f"• Start Time (IST):  {rec.get('start_fmt','pending')}\n"
-        f"• Start Time (UTC):  {rec.get('exact_start_time', 'pending')}\n"
+        f"• Start Time:        {rec.get('start_fmt','pending')}\n"
         f"• Reset Block:       {rec.get('reset_block',0):,}{reset_link}\n"
-        f"• Reset Time (IST):  {rec.get('reset_fmt','pending')}\n"
-        f"• Reset Time (UTC):  {rec.get('exact_reset_time', 'pending')}\n"
+        f"• Reset Time:        {rec.get('reset_fmt','pending')}\n"
         f"• Epoch Duration:    {dur_display}"
     )
 

@@ -356,15 +356,49 @@ async def fetch_block_detail_by_hash(block_hash: str) -> dict | None:
 EXPLORER_BASE = "https://dev.acki.live/blocks"
 
 
+def parse_chain_order_timestamp(chain_order: str) -> int | None:
+    """
+    Decode the Unix timestamp embedded in a chain_order string.
+
+    Official Acki Nacki docs format:
+        <len-1><timestamp_hex><len-1><placeholder_hex><len-1><thread_id_hex><len-1><height_hex>
+
+    The prefix digit is EXACTLY 1 character and represents (hex_length - 1).
+
+    Verified example from docs:
+        "7698320d000670...061d4b1c0"
+         ^ = "7"  →  field is 8 hex chars
+           "698320d0" = 0x698320d0 = 1770201296  ✓
+
+    Returns Unix timestamp (int) or None if parsing fails.
+    """
+    try:
+        s = chain_order.strip()
+        if len(s) < 2:
+            return None
+        # The prefix is always exactly 1 decimal digit
+        field_len = int(s[0]) + 1   # e.g. "7" → 8 hex chars
+        ts_hex    = s[1 : 1 + field_len]
+        return int(ts_hex, 16)
+    except Exception as e:
+        print(f"parse_chain_order_timestamp failed on '{chain_order[:20]}...': {e}")
+        return None
+
+
 async def fetch_block_timestamp(block_height: int) -> tuple[int | None, str | None, str | None]:
     """
     Returns (unix_timestamp, gen_utime_string, block_hash) for a given block height.
 
     The epoch boundary blocks are EXACT numbers (epoch_no × 262000).
 
-    Strategy 1: blockByHeight(thread_id, height) → block(hash)
-    Strategy 2: blocks(seq_no ±5) { nodes { seq_no hash gen_utime } } → exact match
-    Strategy 3: Same with edges { node } — legacy schema fallback.
+    Strategy 1: blockByHeight(thread_id, height) → block(hash) → full detail
+    Strategy 2: seq_no ±5 → edges { node { seq_no hash chain_order gen_utime } }
+                → exact seq_no match → extract ts from chain_order (docs method)
+                   OR from gen_utime directly → then block(hash) for gen_utime_string
+    Strategy 3: Same with nodes { } schema variant
+
+    chain_order is used as the guaranteed timestamp source per official docs:
+        chain_order encodes Unix timestamp directly in its first field.
 
     Returns (None, None, None) if all strategies fail.
     """
@@ -382,17 +416,28 @@ async def fetch_block_timestamp(block_height: int) -> tuple[int | None, str | No
                 return ts, tss, blk
         return None, None, None
 
-    def _exact_node(nodes, target):
-        """Return the node dict whose seq_no exactly matches target."""
-        for node in (nodes or []):
-            if isinstance(node, dict) and normalize_uint(node.get("seq_no")) == target:
-                return node
-        return None
+    def _extract_from_node(node):
+        """
+        Extract (ts, tss, hash) from a block node dict.
+        Tries gen_utime first, then falls back to decoding chain_order.
+        Returns (ts, None, hash) — tss requires a separate block(hash) call.
+        """
+        if not isinstance(node, dict):
+            return None, None, None
+        blk = node.get("hash") or node.get("id") or None
+        ts  = normalize_uint(node.get("gen_utime"))
+        if not ts:
+            co = node.get("chain_order")
+            if co:
+                ts = parse_chain_order_timestamp(co)
+        tss = node.get("gen_utime_string") or None
+        return ts, tss, blk
 
-    def _exact_node_from_edges(edges, target):
-        for edge in (edges or []):
-            node = edge.get("node", {}) if isinstance(edge, dict) else {}
-            if normalize_uint(node.get("seq_no")) == target:
+    def _find_exact(items, target, use_edges=False):
+        """Find the node dict with seq_no == target."""
+        for item in (items or []):
+            node = item.get("node", {}) if (use_edges and isinstance(item, dict)) else item
+            if isinstance(node, dict) and normalize_uint(node.get("seq_no")) == target:
                 return node
         return None
 
@@ -406,64 +451,46 @@ async def fetch_block_timestamp(block_height: int) -> tuple[int | None, str | No
     except Exception as e:
         print(f"fetch_block_timestamp S1({block_height}): {e}")
 
-    # ── Strategy 2: seq_no ±5 → nodes → exact match ───────────────────────
-    q_nodes = f"""
-    query {{
-        blockchain {{
-            blocks(seq_no: {{ start: {block_height - 5}, end: {block_height + 5} }}) {{
-                nodes {{ seq_no hash gen_utime gen_utime_string }}
+    # ── Strategy 2 & 3: seq_no range → exact node → chain_order / gen_utime
+    # We request both edges and nodes shapes in separate queries.
+    # chain_order is requested so we can decode the timestamp directly
+    # from it even if gen_utime is missing — per official Acki Nacki docs.
+    for use_edges, shape in [(True, "edges { node { seq_no hash chain_order gen_utime gen_utime_string } }"),
+                              (False, "nodes { seq_no hash chain_order gen_utime gen_utime_string }")]:
+        q = f"""
+        query {{
+            blockchain {{
+                blocks(seq_no: {{ start: {block_height - 5}, end: {block_height + 5} }}) {{
+                    {shape}
+                }}
             }}
         }}
-    }}
-    """
-    try:
-        r    = await graphql_fetch(q_nodes)
-        nodes = (r.get("json", {}).get("data", {})
-                  .get("blockchain", {}).get("blocks", {}).get("nodes") or [])
-        node = _exact_node(nodes, block_height)
-        if node:
-            h = node.get("hash") or node.get("id")
-            if h:
-                ts, tss, blk = await _detail_from_hash(h)
-                if ts:
-                    return ts, tss, blk
-            # gen_utime may already be in the node
-            ts  = normalize_uint(node.get("gen_utime"))
-            tss = node.get("gen_utime_string") or None
-            blk = node.get("hash") or node.get("id") or None
-            if ts:
-                return ts, tss, blk
-    except Exception as e:
-        print(f"fetch_block_timestamp S2({block_height}): {e}")
+        """
+        label = "S2-edges" if use_edges else "S3-nodes"
+        try:
+            r       = await graphql_fetch(q)
+            bdata   = (r.get("json", {}).get("data", {})
+                        .get("blockchain", {}).get("blocks", {}) or {})
+            items   = bdata.get("edges" if use_edges else "nodes") or []
+            node    = _find_exact(items, block_height, use_edges=use_edges)
+            if not node:
+                continue
 
-    # ── Strategy 3: seq_no ±5 → edges → exact match ───────────────────────
-    q_edges = f"""
-    query {{
-        blockchain {{
-            blocks(seq_no: {{ start: {block_height - 5}, end: {block_height + 5} }}) {{
-                edges {{ node {{ seq_no hash gen_utime gen_utime_string }} }}
-            }}
-        }}
-    }}
-    """
-    try:
-        r     = await graphql_fetch(q_edges)
-        edges = (r.get("json", {}).get("data", {})
-                  .get("blockchain", {}).get("blocks", {}).get("edges") or [])
-        node = _exact_node_from_edges(edges, block_height)
-        if node:
-            h = node.get("hash") or node.get("id")
-            if h:
-                ts, tss, blk = await _detail_from_hash(h)
-                if ts:
-                    return ts, tss, blk
-            ts  = normalize_uint(node.get("gen_utime"))
-            tss = node.get("gen_utime_string") or None
-            blk = node.get("hash") or node.get("id") or None
+            ts, tss, blk = _extract_from_node(node)
+
+            # If we have a hash, fetch full detail for gen_utime_string
+            if blk and not tss:
+                detail = await fetch_block_detail_by_hash(blk)
+                if detail:
+                    ts2  = normalize_uint(detail.get("gen_utime"))
+                    tss2 = detail.get("gen_utime_string") or None
+                    if ts2:
+                        ts, tss = ts2, tss2
+
             if ts:
                 return ts, tss, blk
-    except Exception as e:
-        print(f"fetch_block_timestamp S3({block_height}): {e}")
+        except Exception as e:
+            print(f"fetch_block_timestamp {label}({block_height}): {e}")
 
     print(f"fetch_block_timestamp: all strategies failed for block {block_height}")
     return None, None, None

@@ -24,7 +24,7 @@ CEST = timezone(timedelta(hours=2))
 UTC  = timezone.utc
 
 BLOCKS_PER_EPOCH    = 262_000
-AVG_BLOCK_TIME = 0.33               # fallback only — never stored
+AVG_BLOCK_TIME = 0.35               # fallback only — never stored
 
 TIER_1_END = BLOCKS_PER_EPOCH // 3
 TIER_2_END = (BLOCKS_PER_EPOCH * 2) // 3
@@ -562,6 +562,18 @@ def reward_tier(in_epoch):
     if in_epoch < TIER_2_END: return "Tier 2 — Medium Reward (>6 k taps)"
     return                           "Tier 3 — Low Reward   (>12 k taps)"
 
+
+def tier_progress(in_epoch):
+    """Return percentage completion of the current tier."""
+    if in_epoch < TIER_1_END:
+        tier_start, tier_end = 0, TIER_1_END
+    elif in_epoch < TIER_2_END:
+        tier_start, tier_end = TIER_1_END, TIER_2_END
+    else:
+        tier_start, tier_end = TIER_2_END, TIER_2_END * 2
+    pct = min((in_epoch - tier_start) / (tier_end - tier_start) * 100, 100)
+    return f"{pct:.1f}%"
+
 # ============================================================
 # Text builders
 # ============================================================
@@ -589,18 +601,19 @@ def build_dashboard_text(snapshot):
         f"⏳ Timer Since Epoch Reset: {format_duration(elapsed_sec)}\n"
         f"⏱️ Time left to reset: {format_duration(remaining_sec)}\n\n"
         f"📊 Block Progress\n"
-        f"• Current Block Height: {cb:,}\n"
-        f"• Epoch {en} Started at: {start:,}\n"
-        f"• Epoch {en} Resets at: {reset:,}\n"
-        f"• Blocks Produced This Epoch: {done:,}\n"
-        f"• Blocks Left to Reset: {left:,}\n"
+        f"• Current Block Height: <code>{cb:,}</code>\n"
+        f"• Epoch {en} Started at: <code>{start:,}</code>\n"
+        f"• Epoch {en} Resets at: <code>{reset:,}</code>\n"
+        f"• Blocks Produced This Epoch: <code>{done:,}</code>\n"
+        f"• Blocks Left to Reset: <code>{left:,}</code>\n"
         f"• Progress: {pct:.1f}%\n\n"
         f"🔁 Estimated Reset\n"
         f"• IST:  {reset_ist.strftime('%d/%m %I:%M %p')}\n"
         f"• UTC:  {reset_utc.strftime('%d/%m %I:%M %p')}\n"
         f"• CEST: {reset_cest.strftime('%d/%m %I:%M %p')}\n\n"
         f"🏆 Reward Tier\n"
-        f"• {reward_tier(done)}"
+        f"• {reward_tier(done)}\n"
+        f"• Tier Progress: {tier_progress(done)}"
     )
 
 
@@ -734,6 +747,7 @@ async def do_dashboard_update(chat, forum, snapshot, store, sha):
 def parse_command(text: str) -> str:
     """
     '/start@epoch_helper_bot extra args'  →  '/start'
+    '!start'                              →  '/start'
     '/status'                             →  '/status'
     """
     if not text:
@@ -741,6 +755,9 @@ def parse_command(text: str) -> str:
     first_token = text.strip().split()[0].lower()
     if "@" in first_token:
         first_token = first_token.split("@")[0]
+    # Normalise ! prefix to / so all downstream checks work unchanged
+    if first_token.startswith("!"):
+        first_token = "/" + first_token[1:]
     return first_token
 
 # ============================================================
@@ -1015,35 +1032,16 @@ async def handle(update: Update):
     forum     = bool(getattr(update.effective_chat, "is_forum", False))
     is_bot_sender = getattr(update.effective_user, "is_bot", False)
 
-    # Trusted scheduler bots: only allow /status, ignore everything else
+    # Ignore all bot senders
     if is_bot_sender:
-        if user_id not in TRUSTED_BOT_IDS:
-            return  # ignore all other bots completely
-        # Trusted bot — handle /status below, skip all other logic
-        if update.message:
-            cmd = parse_command((update.message.text or "").strip())
-            if cmd == "/status":
-                snapshot = await get_live_block_snapshot()
-                store, sha = await load_data_async()
-                await do_dashboard_update(chat, forum, snapshot, store, sha)
-            return  # trusted bot only gets /status, nothing else
         return
 
     # Check if it's a private DM (not a group/supergroup/channel)
     chat_type     = update.effective_chat.type
     is_private_dm = (chat_type == "private")
 
-    # In DM: only allow owner, redirect others to group
+    # In DM: only allow owner
     if is_private_dm and user_id not in OWNER_LIST:
-        try:
-            await bot.send_message(
-                int(chat),
-                "👋 Hi! This bot is private in DM.\n\n"
-                "Please join our group to use it:\n"
-                "https://t.me/acki_nacki_popit"
-            )
-        except Exception:
-            pass
         return
 
     # ── Inline button callbacks ──────────────────────────────────────────────
@@ -1160,10 +1158,8 @@ async def handle(update: Update):
                         forum=forum, reply_markup=_refresh_button())
         return
 
-    # /analysis — last 3 completed epochs (owner only)
+    # /analysis — last 3 completed epochs
     if cmd == "/analysis":
-        if not owner_only(user_id):
-            return
 
         async def analysis_job():
             s, sh = await load_data_async()
@@ -1185,10 +1181,8 @@ async def handle(update: Update):
             await send_chunked(chat, report, forum=forum)
         return
 
-    # /epoch <no> — single epoch exact report (owner only)
+    # /epoch <no> — single epoch exact report
     if cmd == "/epoch":
-        if not owner_only(user_id):
-            return
 
         parts = raw_text.split()
         if len(parts) < 2:

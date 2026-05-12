@@ -24,7 +24,7 @@ CEST = timezone(timedelta(hours=2))
 UTC  = timezone.utc
 
 BLOCKS_PER_EPOCH    = 262_000
-AVG_BLOCK_TIME = 0.35               # fallback only — never stored
+AVG_BLOCK_TIME = 0.33               # fallback only — never stored
 
 TIER_1_END = BLOCKS_PER_EPOCH // 3
 TIER_2_END = (BLOCKS_PER_EPOCH * 2) // 3

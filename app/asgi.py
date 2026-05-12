@@ -24,7 +24,7 @@ CEST = timezone(timedelta(hours=2))
 UTC  = timezone.utc
 
 BLOCKS_PER_EPOCH    = 262_000
-AVG_BLOCK_TIME = 0.33               # fallback only — never stored
+AVG_BLOCK_TIME = 0.35               # fallback only — never stored
 
 TIER_1_END = BLOCKS_PER_EPOCH // 3
 TIER_2_END = (BLOCKS_PER_EPOCH * 2) // 3
@@ -150,16 +150,16 @@ def _refresh_button():
     )
 
 
-async def send_text(chat_id, text, forum=False, reply_markup=None):
-    kw = {}
+async def send_text(chat_id, text, forum=False, reply_markup=None, parse_mode="Markdown"):
+    kw = {"parse_mode": parse_mode}
     if reply_markup: kw["reply_markup"] = reply_markup
     if forum:        kw["message_thread_id"] = TARGET_THREAD_ID
     return await bot.send_message(int(chat_id), text, **kw)
 
 
-async def send_chunked(chat_id, text, forum=False):
+async def send_chunked(chat_id, text, forum=False, parse_mode="Markdown"):
     if len(text) <= 3900:
-        return [await send_text(chat_id, text, forum=forum)]
+        return [await send_text(chat_id, text, forum=forum, parse_mode=parse_mode)]
 
     chunks, current = [], ""
     for paragraph in text.split("\n\n"):
@@ -175,7 +175,7 @@ async def send_chunked(chat_id, text, forum=False):
     if current.strip():
         chunks.append(current.rstrip())
 
-    return [await send_text(chat_id, chunk, forum=forum) for chunk in chunks]
+    return [await send_text(chat_id, chunk, forum=forum, parse_mode=parse_mode) for chunk in chunks]
 
 
 def owner_only(user_id):

@@ -24,7 +24,7 @@ CEST = timezone(timedelta(hours=2))
 UTC  = timezone.utc
 
 BLOCKS_PER_EPOCH    = 262_000
-AVG_BLOCK_TIME = 0.33               # fallback only — never stored
+AVG_BLOCK_TIME = 0.35               # fallback only — never stored
 
 TIER_1_END = BLOCKS_PER_EPOCH // 3
 TIER_2_END = (BLOCKS_PER_EPOCH * 2) // 3
@@ -150,14 +150,14 @@ def _refresh_button():
     )
 
 
-async def send_text(chat_id, text, forum=False, reply_markup=None, parse_mode="Markdown"):
+async def send_text(chat_id, text, forum=False, reply_markup=None, parse_mode="HTML"):
     kw = {"parse_mode": parse_mode}
     if reply_markup: kw["reply_markup"] = reply_markup
     if forum:        kw["message_thread_id"] = TARGET_THREAD_ID
     return await bot.send_message(int(chat_id), text, **kw)
 
 
-async def send_chunked(chat_id, text, forum=False, parse_mode="Markdown"):
+async def send_chunked(chat_id, text, forum=False, parse_mode="HTML"):
     if len(text) <= 3900:
         return [await send_text(chat_id, text, forum=forum, parse_mode=parse_mode)]
 
@@ -551,9 +551,9 @@ def format_blockchain_time(unix_ts):
     dt_utc = datetime.fromtimestamp(unix_ts, UTC)
     dt_ist = dt_utc.astimezone(IST)
     return (
-        f"{dt_ist.strftime('%d %b %Y')} | "
+        f"{dt_ist.strftime('%d/%m/%Y')} | "
         f"{dt_ist.strftime('%I:%M %p')} | "
-        f"UTC: {dt_utc.strftime('%H:%M')}"
+        f"UTC:{dt_utc.strftime('%H:%M')}"
     )
 
 
@@ -596,9 +596,9 @@ def build_dashboard_text(snapshot):
         f"• Blocks Left to Reset: {left:,}\n"
         f"• Progress: {pct:.1f}%\n\n"
         f"🔁 Estimated Reset\n"
-        f"• IST:  {reset_ist.strftime('%d %b %I:%M %p')}\n"
-        f"• UTC:  {reset_utc.strftime('%d %b %I:%M %p')}\n"
-        f"• CEST: {reset_cest.strftime('%d %b %I:%M %p')}\n\n"
+        f"• IST:  {reset_ist.strftime('%d/%m %I:%M %p')}\n"
+        f"• UTC:  {reset_utc.strftime('%d/%m %I:%M %p')}\n"
+        f"• CEST: {reset_cest.strftime('%d/%m %I:%M %p')}\n\n"
         f"🏆 Reward Tier\n"
         f"• {reward_tier(done)}"
     )
@@ -617,7 +617,7 @@ def build_pin_text(snapshot):
 
     return (
         f"⏳ Time to next epoch reset: {format_duration(remaining)}\n"
-        f"📌 Est. reset: {reset_ist.strftime('%d %b %I:%M %p')} IST"
+        f"📌 Est. reset: {reset_ist.strftime('%d/%m %I:%M %p')} IST"
     )
 
 
@@ -630,9 +630,9 @@ def build_blocks_text(snapshot):
     return (
         f"📦 Live Block Height\n"
         f"• Block: {cb:,}\n"
-        f"• IST:  {dt_ist.strftime('%d %b %I:%M %p')}\n"
-        f"• UTC:  {dt_utc.strftime('%d %b %I:%M %p')}\n"
-        f"• CEST: {dt_cest.strftime('%d %b %I:%M %p')}"
+        f"• IST:  {dt_ist.strftime('%d/%m %I:%M %p')}\n"
+        f"• UTC:  {dt_utc.strftime('%d/%m %I:%M %p')}\n"
+        f"• CEST: {dt_cest.strftime('%d/%m %I:%M %p')}"
     )
 
 # ============================================================
@@ -685,6 +685,7 @@ async def _try_edit(chat_id, msg_id, text, reply_markup=None):
             chat_id=int(chat_id),
             message_id=int(msg_id),
             text=text,
+            parse_mode="HTML",
             **kw,
         )
         return "ok"
@@ -938,14 +939,14 @@ def build_analysis_report(store, current_block=None, n=ANALYSIS_EPOCH_COUNT):
 
         start_url = h.get("start_url")
         reset_url = h.get("reset_url")
-        start_link = f" [Block Info 🔗]({start_url})" if start_url else ""
-        reset_link = f" [Block Info 🔗]({reset_url})" if reset_url else ""
+        start_link = f' <a href="{start_url}">Block Info 🔗</a>' if start_url else ""
+        reset_link = f' <a href="{reset_url}">Block Info 🔗</a>' if reset_url else ""
 
         out += (
             f"📅 Epoch {h.get('epoch_no','?')} | Auto Reset\n"
-            f"• Start Block: {h.get('start_block',0):,}{start_link}\n"
+            f"• Start Block: <code>{h.get('start_block',0):,}</code>{start_link}\n"
             f"• Start Time: {h.get('start_fmt','pending')}\n"
-            f"• Reset Block: {h.get('reset_block',0):,}{reset_link}\n"
+            f"• Reset Block: <code>{h.get('reset_block',0):,}</code>{reset_link}\n"
             f"• Reset Time: {h.get('reset_fmt','pending')}\n"
             f"• Epoch Duration: {dur_display}\n\n"
         )
@@ -964,14 +965,14 @@ def build_epoch_report(rec):
     start_url = rec.get("start_url")
     reset_url = rec.get("reset_url")
     # Telegram inline hyperlink: [text](url)
-    start_link = f" [Block Info 🔗]({start_url})" if start_url else ""
-    reset_link = f" [Block Info 🔗]({reset_url})" if reset_url else ""
+    start_link = f' <a href="{start_url}">Block Info 🔗</a>' if start_url else ""
+    reset_link = f' <a href="{reset_url}">Block Info 🔗</a>' if reset_url else ""
 
     return (
         f"📅 Epoch {rec.get('epoch_no','?')} | Auto Reset\n"
-        f"• Start Block: {rec.get('start_block',0):,}{start_link}\n"
+        f"• Start Block: <code>{rec.get('start_block',0):,}</code>{start_link}\n"
         f"• Start Time: {rec.get('start_fmt','pending')}\n"
-        f"• Reset Block: {rec.get('reset_block',0):,}{reset_link}\n"
+        f"• Reset Block: <code>{rec.get('reset_block',0):,}</code>{reset_link}\n"
         f"• Reset Time: {rec.get('reset_fmt','pending')}\n"
         f"• Epoch Duration: {dur_display}"
     )

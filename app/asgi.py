@@ -24,7 +24,7 @@ CEST = timezone(timedelta(hours=2))
 UTC  = timezone.utc
 
 BLOCKS_PER_EPOCH    = 262_000
-AVG_BLOCK_TIME = 0.33               # fallback only — never stored
+AVG_BLOCK_TIME = 0.35               # fallback only — never stored
 
 TIER_1_END = BLOCKS_PER_EPOCH // 3
 TIER_2_END = (BLOCKS_PER_EPOCH * 2) // 3
@@ -943,11 +943,11 @@ def build_analysis_report(store, current_block=None, n=ANALYSIS_EPOCH_COUNT):
 
         out += (
             f"📅 Epoch {h.get('epoch_no','?')} | Auto Reset\n"
-            f"• Start Block:      {h.get('start_block',0):,}{start_link}\n"
-            f"• Start Time:       {h.get('start_fmt','pending')}\n"
-            f"• Reset Block:      {h.get('reset_block',0):,}{reset_link}\n"
-            f"• Reset Time:       {h.get('reset_fmt','pending')}\n"
-            f"• Epoch Duration:   {dur_display}\n\n"
+            f"• Start Block: {h.get('start_block',0):,}{start_link}\n"
+            f"• Start Time: {h.get('start_fmt','pending')}\n"
+            f"• Reset Block: {h.get('reset_block',0):,}{reset_link}\n"
+            f"• Reset Time: {h.get('reset_fmt','pending')}\n"
+            f"• Epoch Duration: {dur_display}\n\n"
         )
     return out.rstrip()
 
@@ -969,11 +969,11 @@ def build_epoch_report(rec):
 
     return (
         f"📅 Epoch {rec.get('epoch_no','?')} | Auto Reset\n"
-        f"• Start Block:       {rec.get('start_block',0):,}{start_link}\n"
-        f"• Start Time:        {rec.get('start_fmt','pending')}\n"
-        f"• Reset Block:       {rec.get('reset_block',0):,}{reset_link}\n"
-        f"• Reset Time:        {rec.get('reset_fmt','pending')}\n"
-        f"• Epoch Duration:    {dur_display}"
+        f"• Start Block: {rec.get('start_block',0):,}{start_link}\n"
+        f"• Start Time: {rec.get('start_fmt','pending')}\n"
+        f"• Reset Block: {rec.get('reset_block',0):,}{reset_link}\n"
+        f"• Reset Time: {rec.get('reset_fmt','pending')}\n"
+        f"• Epoch Duration: {dur_display}"
     )
 
 # ============================================================

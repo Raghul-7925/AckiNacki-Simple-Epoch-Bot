@@ -150,16 +150,16 @@ def _refresh_button():
     )
 
 
-async def send_text(chat_id, text, forum=False, reply_markup=None):
-    kw = {}
+async def send_text(chat_id, text, forum=False, reply_markup=None, parse_mode="Markdown"):
+    kw = {"parse_mode": parse_mode}
     if reply_markup: kw["reply_markup"] = reply_markup
     if forum:        kw["message_thread_id"] = TARGET_THREAD_ID
     return await bot.send_message(int(chat_id), text, **kw)
 
 
-async def send_chunked(chat_id, text, forum=False):
+async def send_chunked(chat_id, text, forum=False, parse_mode="Markdown"):
     if len(text) <= 3900:
-        return [await send_text(chat_id, text, forum=forum)]
+        return [await send_text(chat_id, text, forum=forum, parse_mode=parse_mode)]
 
     chunks, current = [], ""
     for paragraph in text.split("\n\n"):
@@ -175,7 +175,7 @@ async def send_chunked(chat_id, text, forum=False):
     if current.strip():
         chunks.append(current.rstrip())
 
-    return [await send_text(chat_id, chunk, forum=forum) for chunk in chunks]
+    return [await send_text(chat_id, chunk, forum=forum, parse_mode=parse_mode) for chunk in chunks]
 
 
 def owner_only(user_id):
@@ -904,6 +904,93 @@ async def ensure_last_n_epochs(store, current_block, n=ANALYSIS_EPOCH_COUNT):
 
 
 
+async def background_epoch_cache(store, sha, current_block):
+    """
+    Proactively fetch and cache timestamps for:
+      - The current epoch's start block  (epoch N start)
+      - The current epoch's reset block  (epoch N+1 start = reset of N)
+      - The last completed epoch's start and reset blocks (epoch N-1)
+
+    Called silently on every /status and Update button press.
+    Since the API only holds ~24h of block data, we must capture timestamps
+    while the blocks are still within that window — before they age out.
+
+    Saves to GitHub only if new data was actually added.
+    """
+    if not isinstance(store.get("history"), list):
+        store["history"] = []
+
+    current_epoch = epoch_no_from_block(current_block)
+    changed       = False
+
+    # --- 1. Completed epoch N-1: both start and reset ---
+    prev_epoch = current_epoch - 1
+    if prev_epoch >= 1:
+        existing = find_history_record(store, prev_epoch)
+        # Fetch if missing entirely, or if either timestamp is still pending
+        needs_fetch = (
+            existing is None
+            or not existing.get("start_timestamp")
+            or not existing.get("reset_timestamp")
+        )
+        if needs_fetch:
+            start_h = epoch_start_block(prev_epoch)
+            reset_h = epoch_reset_block(prev_epoch)   # == epoch N start block
+            start_data, reset_data = await asyncio.gather(
+                fetch_block_timestamp(start_h),
+                fetch_block_timestamp(reset_h),
+            )
+            st, stss, sh = start_data
+            rt, rtss, rh = reset_data
+            # Merge with existing partial record if present
+            if existing:
+                st   = st   or existing.get("start_timestamp")
+                stss = stss or existing.get("exact_start_time")
+                sh   = sh   or existing.get("start_hash")
+                rt   = rt   or existing.get("reset_timestamp")
+                rtss = rtss or existing.get("exact_reset_time")
+                rh   = rh   or existing.get("reset_hash")
+                store["history"] = [x for x in store["history"]
+                                    if normalize_uint(x.get("epoch_no")) != prev_epoch]
+            if st or rt:
+                rec = build_analysis_record(prev_epoch, st, rt,
+                                             start_utime_str=stss, reset_utime_str=rtss,
+                                             start_hash=sh, reset_hash=rh)
+                if rec:
+                    store["history"].append(rec)
+                    store["history"].sort(key=lambda x: normalize_uint(x.get("epoch_no")))
+                    changed = True
+
+    # --- 2. Current epoch N: capture its start block timestamp now ---
+    # We store this as a partial record (no reset_ts yet — epoch not done).
+    # When epoch N completes and becomes N-1 above, the full record is built.
+    curr_start_h = epoch_start_block(current_epoch)
+    curr_existing = find_history_record(store, current_epoch)
+    if curr_existing is None or not curr_existing.get("start_timestamp"):
+        data = await fetch_block_timestamp(curr_start_h)
+        ts, tss, h = data
+        if ts:
+            # Store as partial — reset pending
+            if curr_existing:
+                store["history"] = [x for x in store["history"]
+                                    if normalize_uint(x.get("epoch_no")) != current_epoch]
+            rec = build_analysis_record(current_epoch, ts, None,
+                                         start_utime_str=tss, reset_utime_str=None,
+                                         start_hash=h, reset_hash=None)
+            if rec:
+                store["history"].append(rec)
+                store["history"].sort(key=lambda x: normalize_uint(x.get("epoch_no")))
+                changed = True
+
+    if changed and sha:
+        try:
+            await save_data_async(store, sha)
+        except Exception as e:
+            print(f"background_epoch_cache save: {e}")
+
+    return changed
+
+
 def build_analysis_report(store, current_block=None, n=ANALYSIS_EPOCH_COUNT):
     """Show only the last n completed epochs, most recent last."""
     hist = store.get("history", [])
@@ -1016,6 +1103,7 @@ async def handle(update: Update):
                 snapshot = await get_live_block_snapshot()
                 store, sha = await load_data_async()
                 await do_dashboard_update(chat, forum, snapshot, store, sha)
+                asyncio.create_task(background_epoch_cache(store, sha, snapshot["currentHeight"]))
             return  # trusted bot only gets /status, nothing else
         return
 
@@ -1070,6 +1158,8 @@ async def handle(update: Update):
             
             # Update dashboard
             await do_dashboard_update(chat, forum, snapshot, store, sha)
+            # Silently cache epoch timestamps in the background
+            asyncio.create_task(background_epoch_cache(store, sha, snapshot["currentHeight"]))
             return
 
         # 🔄 Refresh button on /blocks message
@@ -1126,6 +1216,8 @@ async def handle(update: Update):
         )
         store, sha = await load_data_async()
         await send_fresh_dashboard(chat, forum, snapshot, store, sha)
+        # Silently cache epoch timestamps in the background
+        asyncio.create_task(background_epoch_cache(store, sha, snapshot["currentHeight"]))
         return
 
     # /status — edits the two stored messages, never sends new ones
@@ -1137,6 +1229,8 @@ async def handle(update: Update):
         )
         store, sha = await load_data_async()
         await do_dashboard_update(chat, forum, snapshot, store, sha)
+        # Silently cache epoch timestamps in the background
+        asyncio.create_task(background_epoch_cache(store, sha, snapshot["currentHeight"]))
         return
 
     # /blocks — live block height with 🔄 Refresh inline button

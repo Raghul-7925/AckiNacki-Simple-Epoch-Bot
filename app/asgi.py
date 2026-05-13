@@ -564,13 +564,14 @@ def reward_tier(in_epoch):
 
 
 def tier_progress(in_epoch):
-    """Return percentage completion of the current tier."""
+    """Return percentage completion within the current tier only."""
     if in_epoch < TIER_1_END:
         tier_start, tier_end = 0, TIER_1_END
     elif in_epoch < TIER_2_END:
         tier_start, tier_end = TIER_1_END, TIER_2_END
     else:
-        tier_start, tier_end = TIER_2_END, TIER_2_END * 2
+        # Tier 3 ends at epoch end (BLOCKS_PER_EPOCH)
+        tier_start, tier_end = TIER_2_END, BLOCKS_PER_EPOCH
     pct = min((in_epoch - tier_start) / (tier_end - tier_start) * 100, 100)
     return f"{pct:.1f}%"
 

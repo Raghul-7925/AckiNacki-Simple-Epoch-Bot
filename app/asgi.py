@@ -1047,8 +1047,8 @@ async def handle(update: Update):
     forum     = bool(getattr(update.effective_chat, "is_forum", False))
     is_bot_sender = getattr(update.effective_user, "is_bot", False)
 
-    # Ignore all bot senders
-    if is_bot_sender:
+    # Allow trusted bots
+    if is_bot_sender and user_id not in TRUSTED_BOT_IDS:
         return
 
     # Check if it's a private DM (not a group/supergroup/channel)

@@ -912,8 +912,23 @@ async def ensure_last_n_epochs(store, current_block, n=ANALYSIS_EPOCH_COUNT):
     changed = False
     for en in missing:
         start_h = epoch_start_block(en)
-        reset_h = epoch_reset_block(en)
-        start_data, reset_data = await asyncio.gather(get_block(start_h), get_block(reset_h))
+        reset_h = epoch_reset_block(en)  # == epoch_start_block(en+1)
+
+        # Reuse epoch en+1's start data as reset data if already cached —
+        # they are the same block, and the API only holds ~24h of history.
+        next_rec  = find_history_record(store, en + 1)
+        if next_rec and next_rec.get("start_timestamp"):
+            reset_data = (
+                next_rec["start_timestamp"],
+                next_rec.get("exact_start_time"),
+                next_rec.get("start_hash"),
+            )
+            start_data = await get_block(start_h)
+        else:
+            start_data, reset_data = await asyncio.gather(
+                get_block(start_h), get_block(reset_h)
+            )
+
         start_ts, start_tss, start_hash = start_data
         reset_ts, reset_tss, reset_hash = reset_data
         rec = build_analysis_record(en, start_ts, reset_ts,
@@ -1042,6 +1057,18 @@ async def handle(update: Update):
 
     # In DM: only allow owner
     if is_private_dm and user_id not in OWNER_LIST:
+        try:
+            await bot.send_message(
+                int(chat),
+                "👋 Sorry for the inconvenience!\n\n"
+                "Since this bot runs on a serverless platform, it is not suitable "
+                "to handle multiple user requests in DM.\n\n"
+                "To avoid this limitation, the bot works only inside the group.\n"
+                "Join here 👉 https://t.me/acki_nacki_popit",
+                parse_mode="HTML",
+            )
+        except Exception:
+            pass
         return
 
     # ── Inline button callbacks ──────────────────────────────────────────────
@@ -1200,8 +1227,40 @@ async def handle(update: Update):
         async def epoch_job():
             s, sh = await load_data_async()
             rec   = find_history_record(s, epoch_no)
+
+            # If we have a record but reset_timestamp is missing,
+            # try to fill it from epoch N+1's start_timestamp (same block).
+            if rec and not rec.get("reset_timestamp"):
+                next_rec = find_history_record(s, epoch_no + 1)
+                if next_rec and next_rec.get("start_timestamp"):
+                    rec["reset_timestamp"] = next_rec["start_timestamp"]
+                    rec["reset_fmt"]       = next_rec.get("start_fmt", "pending")
+                    rec["exact_reset_time"]= next_rec.get("exact_start_time", "pending")
+                    rec["reset_hash"]      = next_rec.get("start_hash")
+                    rec["reset_url"]       = next_rec.get("start_url")
+                    st = rec.get("start_timestamp")
+                    rt = rec["reset_timestamp"]
+                    if st and rt and rt > st:
+                        dur = rt - st
+                        h_val, m_val = dur // 3600, (dur % 3600) // 60
+                        rec["epoch_duration"]         = format_duration(dur)
+                        rec["epoch_duration_seconds"] = dur
+                    s["history"].sort(key=lambda x: normalize_uint(x.get("epoch_no")))
+                    await save_data_async(s, sh)
+                    return rec
+
             if rec is None:
-                rec = await build_epoch_record(epoch_no)
+                # Before fetching reset from API (likely >24h old),
+                # check if epoch N+1's start is already cached — same block.
+                prefetch_reset = None
+                next_rec = find_history_record(s, epoch_no + 1)
+                if next_rec and next_rec.get("start_timestamp"):
+                    prefetch_reset = (
+                        next_rec["start_timestamp"],
+                        next_rec.get("exact_start_time"),
+                        next_rec.get("start_hash"),
+                    )
+                rec = await build_epoch_record(epoch_no, prefetch_reset=prefetch_reset)
                 if rec:
                     s["history"].append(rec)
                     s["history"].sort(key=lambda x: normalize_uint(x.get("epoch_no")))

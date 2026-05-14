@@ -40,7 +40,7 @@ GRAPHQL_URL_FALLBACK = "https://mainnet-cf.ackinacki.org/graphql"
 GITHUB_API = f"https://api.github.com/repos/{GITHUB_REPO}/contents/{GITHUB_FILE}"
 
 DEFAULT_ENDPOINTS    = "mainnet.ackinacki.org,mainnet-cf.ackinacki.org"
-DEFAULT_SAMPLE_BLOCKS = 500
+DEFAULT_SAMPLE_BLOCKS = 300
 
 # Callback-data constants
 CB_UPDATE_DASHBOARD = "update_dashboard"

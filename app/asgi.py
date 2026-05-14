@@ -605,7 +605,7 @@ def build_dashboard_text(snapshot):
         f"• Current Block Height: <code>{cb:,}</code>\n"
         f"• Epoch {en} Started at: <code>{start:,}</code>\n"
         f"• Epoch {en} Resets at: <code>{reset:,}</code>\n"
-        f"• Blocks Produced This Epoch: <code>{done:,}</code>\n"
+        f"• Blocks Produced: <code>{done:,}</code>\n"
         f"• Blocks Left to Reset: <code>{left:,}</code>\n"
         f"• Progress: {pct:.1f}%\n\n"
         f"🔁 Estimated Reset\n"
@@ -630,7 +630,7 @@ def build_pin_text(snapshot):
     reset_ist = reset_dt.astimezone(IST)
 
     return (
-        f"⏳ Time Left To Reset: {format_duration(remaining)}\n"
+        f"⏳ Time Left To Reset: {format_duration(remaining)}\n\n"
         f"📌 Est. reset: {reset_ist.strftime('%d/%m %I:%M %p')} IST"
     )
 

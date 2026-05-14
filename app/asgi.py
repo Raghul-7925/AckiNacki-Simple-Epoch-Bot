@@ -141,7 +141,7 @@ def set_chat_pins(store, chat, *, pin_msg_id=None, dashboard_msg_id=None):
 
 def _update_button():
     return InlineKeyboardMarkup(
-        [[InlineKeyboardButton("🔃 Update", callback_data=CB_UPDATE_DASHBOARD)]]
+        [[InlineKeyboardButton("🔁 Update", callback_data=CB_UPDATE_DASHBOARD)]]
     )
 
 def _refresh_button():
@@ -630,7 +630,7 @@ def build_pin_text(snapshot):
     reset_ist = reset_dt.astimezone(IST)
 
     return (
-        f"⏳ Time to next epoch reset: {format_duration(remaining)}\n"
+        f"⏳ Time Left To Reset: {format_duration(remaining)}\n"
         f"📌 Est. reset: {reset_ist.strftime('%d/%m %I:%M %p')} IST"
     )
 

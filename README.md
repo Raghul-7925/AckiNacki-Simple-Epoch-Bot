@@ -1,6 +1,6 @@
-# ⏱️ Epoch Helper Bot
+# ⏱️ AN Epoch Helper Bot
 
-> **A smart Telegram bot for tracking daily 24h 55m epochs with continuous cycling, persistent analytics, and real-time dashboard updates.**
+> **A smart Telegram bot for tracking Acki Nacki blockchain epochs in real-time — live dashboard, exact block timestamps, explorer links, reward tier tracking, and persistent analytics.**
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![Python 3.8+](https://img.shields.io/badge/python-3.8+-blue.svg)](https://www.python.org/downloads/)
@@ -11,17 +11,23 @@
 
 ## 🌟 Features
 
-- ✅ **Real-time Dashboard** - Pinned message that updates live without spam
-- ✅ **24h 55m Reset Cycle** - Accurate daily resets with automatic continuation
-- ✅ **Continuous Cycling** - Days flow seamlessly: Day 1 → Day 2 → Day 3 → ∞
-- ✅ **Daily Reward Zones** - 80% zone (1-96 epochs) vs 20% zone (97-172 epochs)
-- ✅ **Epoch Tracking** - 288 epochs per day × 330 seconds each
-- ✅ **Tap Counter** - 12,000 daily tap limit with real-time progress
-- ✅ **Analytics** - Historical table of all past days with exact start/reset times
-- ✅ **Manual Time Set** - Set custom epoch start time via interactive menus
-- ✅ **Phase Timings** - Part 1, Part 2, Part 3 with scheduled timestamps
-- ✅ **Persistent Storage** - All data saved to GitHub (no database needed)
-- ✅ **Group Support** - Works in private chats and groups with pinned messages
+- ✅ **Real-time Dashboard** — Pinned message updates live without spam via inline Update button
+- ✅ **Live Block Tracking** — Fetches current block height from Acki Nacki GraphQL API with fallback endpoint
+- ✅ **Epoch Progress** — Tracks blocks produced, blocks remaining, and % completion per epoch
+- ✅ **Estimated Reset Time** — Calculated live from real block rate in IST, UTC, and CEST
+- ✅ **Reward Tier Tracking** — Shows current tier (1/2/3) with % progress within that tier only
+- ✅ **Exact Block Timestamps** — Fetches real `gen_utime` from blockchain for epoch boundary blocks
+- ✅ **Explorer Links** — Each boundary block links directly to `dev.acki.live/blocks/<hash>`
+- ✅ **Epoch Reports** — Full report for any specific epoch number (`/epoch 209`)
+- ✅ **Analysis History** — Last 3 completed epochs with exact times, duration and explorer links
+- ✅ **Background Caching** — Proactively captures block timestamps on every user interaction (API only holds ~24h)
+- ✅ **Cross-epoch Reuse** — Reset block of epoch N = Start block of epoch N+1, reused automatically
+- ✅ **Stale Record Healing** — Pending reset times filled automatically when next epoch data becomes available
+- ✅ **Duplicate `/start` Protection** — Deletes old pin and dashboard before creating fresh ones
+- ✅ **Persistent Storage** — All data saved to GitHub JSON (no database needed)
+- ✅ **Group + Forum Support** — Works in groups, supergroups, and forum threads
+- ✅ **DM Restricted** — DM access for bot owner only; others get a friendly redirect message
+- ✅ **`!` Command Support** — Accepts both `/command` and `!command` syntax
 
 ---
 
@@ -48,18 +54,16 @@ cd epoch-helper-bot
 pip install -r requirements.txt
 ```
 
-### Step 3: Create Environment File
-```bash
-cp .env.example .env
-```
+### Step 3: Set Environment Variables
 
-Edit `.env` with your credentials:
-```env
-BOT_TOKEN=123456789:ABCDefGHijKlmnoPQRstUVwxyz
-GITHUB_TOKEN=ghp_xxxxxxxxxxxxxxxxxxxxxxxxxxxxx
-GITHUB_REPO=yourusername/your-repo-name
-GITHUB_FILE=data.json
-```
+Set these in Vercel Dashboard → Settings → Environment Variables:
+
+| Variable | Required | Description |
+|----------|----------|-------------|
+| `BOT_TOKEN` | ✅ | Telegram Bot Token from @BotFather |
+| `GITHUB_TOKEN` | ✅ | GitHub Personal Access Token (`repo` scope) |
+| `GITHUB_REPO` | ✅ | GitHub repo for storage e.g. `username/repo` |
+| `GITHUB_FILE` | ⚠️ | Data filename (default: `data.json`) |
 
 ### Step 4: Create GitHub Data File
 
@@ -70,271 +74,244 @@ In your GitHub repository, create `data.json`:
 
 ### Step 5: Deploy to Vercel
 
-#### Option A: Using Vercel CLI
+#### Option A: Vercel CLI
 ```bash
 npm install -g vercel
 vercel login
 vercel
-# Follow prompts and set environment variables
 ```
 
 #### Option B: GitHub Integration
 1. Connect your repo to [Vercel Dashboard](https://vercel.com)
-2. Go to Settings → Environment Variables
-3. Add all environment variables from `.env`
-4. Auto-deploys on every push
+2. Go to Settings → Environment Variables and add all variables above
+3. Deploy — auto-redeploys on every push to main
 
 ### Step 6: Set Telegram Webhook
-
-Replace `BOT_TOKEN` and `VERCEL_URL`, then visit in your browser:
 
 ```
 https://api.telegram.org/bot{BOT_TOKEN}/setWebhook?url=https://{VERCEL_URL}.vercel.app/asgi.py
 ```
 
-Or use curl:
-```bash
-curl -X POST "https://api.telegram.org/bot{BOT_TOKEN}/setWebhook?url=https://{VERCEL_URL}.vercel.app/asgi.py"
-```
-
-Verify the webhook is set correctly:
+Verify it's set correctly:
 ```bash
 curl https://api.telegram.org/bot{BOT_TOKEN}/getWebhookInfo
 ```
 
 ---
 
-## 📱 Bot Commands & Buttons
+## 📱 Bot Commands
 
-### Main Menu
-| Button | Function | Description |
-|--------|----------|-------------|
-| ▶️ **Start Epoch** | Begin tracking | Starts from current time, creates live dashboard |
-| 📊 **Status** | Show dashboard | Updates pinned message with live stats |
-| 🕒 **Set Time** | Manual start | Choose specific time to start epoch (IST) |
-| 🔄 **Reset** | Clear data | Deletes all tracking data for this user |
-| 📈 **Analysis** | View history | Shows table of all past days with times |
+All commands work with both `/` and `!` prefix (e.g. `/start` or `!start`).
 
-### Slash Commands
-- `/start` - Equivalent to ▶️ Start Epoch button
+| Command | Description |
+|---------|-------------|
+| `/start` | Send pinned countdown + live dashboard with Update button |
+| `/status` | Refresh dashboard and update pinned message in-place |
+| `/blocks` | Show live block height with Refresh button |
+| `/epoch <n>` | Full report for a specific epoch e.g. `/epoch 209` |
+| `/analysis` | Last 3 completed epochs with timestamps and explorer links |
+| `/help` | Show all available commands |
 
 ---
 
 ## 📊 How It Works
 
-### Epoch System Overview
+### Blockchain & Epoch System
 
 ```
-Duration per Day:  24 hours 55 minutes (89,700 seconds)
-Total Epochs:      288 per day
-Seconds per Epoch: 330 seconds (5 minutes 30 seconds)
-Daily Tap Limit:   12,000 taps
-Taps per Epoch:    70 taps
+Network:            Acki Nacki Mainnet
+GraphQL Primary:    https://mainnet.ackinacki.org/graphql
+GraphQL Fallback:   https://mainnet-cf.ackinacki.org/graphql
+Block Explorer:     https://dev.acki.live/blocks/<hash>
+Blocks per Epoch:   262,000
+Avg Block Time:     ~0.33s (fallback only — live rate used when available)
 ```
 
-### Reward Structure
+### Epoch Calculation
 
-| Part | Epochs | Reward | Taps |
-|------|--------|--------|------|
-| **Part 1** (High) | 1-96 | 80% | 6,720 |
-| **Part 2** (Medium) | 97-172 | 20% | 3,360 |
-| **Part 3** (Low) | 173-288 | Low | 1,920 |
-
-### Continuous Cycle Example
-
+```python
+epoch_no    = block_height // 262_000
+start_block = epoch_no * 262_000
+reset_block = (epoch_no + 1) * 262_000
 ```
-Day 1:  12:00 PM (23 Apr) ─→ 11:55 AM (24 Apr) [24h 55m reset]
-         │
-         └─→ Day 2:  11:55 AM (24 Apr) ─→ 11:50 AM (25 Apr) [24h 55m reset]
-             │
-             └─→ Day 3:  11:50 AM (25 Apr) ─→ 11:45 AM (26 Apr) [24h 55m reset]
-                 │
-                 └─→ ... continues forever without stopping ...
+
+### Reward Tiers
+
+Each epoch of 262,000 blocks is split into 3 equal tiers:
+
+| Tier | Block Range (within epoch) | Reward Level |
+|------|---------------------------|--------------|
+| **Tier 1** | 0 – 87,333 | High Reward |
+| **Tier 2** | 87,334 – 174,666 | Medium Reward |
+| **Tier 3** | 174,667 – 262,000 | Low Reward |
+
+Tier progress % is calculated **within the current tier's range only**, not the full epoch.
+
+---
+
+## 🖥️ Display Examples
+
+### Pinned Message
+```
+⏳ Time to next epoch reset: 14h 32m
+📌 Est. reset: 15/05 08:48 PM IST
+```
+
+### Full Dashboard
+```
+Current Epoch: 210
+⏳ Timer Since Epoch Reset: 3h 12m
+⏱️ Time left to reset: 21h 45m
+
+📊 Block Progress
+• Current Block Height: 55,062,400
+• Epoch 210 Started at: 55,020,000
+• Epoch 210 Resets at:  55,282,000
+• Blocks Produced This Epoch: 42,400
+• Blocks Left to Reset: 219,600
+• Progress: 16.2%
+
+🔁 Estimated Reset
+• IST:  16/05 01:30 AM
+• UTC:  15/05 08:00 PM
+• CEST: 15/05 10:00 PM
+
+🏆 Reward Tier
+• Tier 1 — High Reward (<6k taps)
+• Tier Progress: 48.5%
+```
+
+### Epoch Report (`/epoch 209`)
+```
+📅 Epoch 209 | Auto Reset
+• Start Block: 54,758,000 Block Info 🔗
+• Start Time: 13/05/2026 | 12:21 AM | UTC:18:51
+• Reset Block: 55,020,000 Block Info 🔗
+• Reset Time: 14/05/2026 | 01:30 AM | UTC:20:00
+• Epoch Duration: 25h 9m (90,540s exact)
+```
+
+### Analysis (`/analysis`)
+```
+📊 Last 3 Completed Epochs
+
+📅 Epoch 208 | Auto Reset
+• Start Block: 54,496,000 Block Info 🔗
+• Start Time: 11/05/2026 | 11:20 PM | UTC:17:50
+• Reset Block: 54,758,000 Block Info 🔗
+• Reset Time: 13/05/2026 | 12:21 AM | UTC:18:51
+• Epoch Duration: 25h 1m (90,060s)
+
+📅 Epoch 209 | Auto Reset
+• Start Block: 54,758,000 Block Info 🔗
+• Start Time: 13/05/2026 | 12:21 AM | UTC:18:51
+• Reset Block: 55,020,000 Block Info 🔗
+• Reset Time: 14/05/2026 | 01:30 AM | UTC:20:00
+• Epoch Duration: 25h 9m (90,540s)
+
+📅 Epoch 210 | Auto Reset
+• Start Block: 55,020,000 Block Info 🔗
+• Start Time: 14/05/2026 | 01:30 AM | UTC:20:00
+• Reset Block: 55,282,000
+• Reset Time: pending
+• Epoch Duration: pending
 ```
 
 ---
 
-## 💾 Data Storage & Schema
+## 🕐 Timestamp Fetching Strategy
 
-All data stored in GitHub as JSON format:
+The Acki Nacki API only holds **~24 hours** of block history. The bot uses multiple strategies to never miss a timestamp:
+
+### Fetch Strategies (tried in order)
+
+1. **`blockByHeight(thread_id, height)`** → `block(hash)` — explorer method, ideal for recent blocks
+2. **`seq_no range ±5` → `nodes { seq_no hash chain_order gen_utime }`** — exact match, decodes timestamp from `chain_order` if `gen_utime` is missing
+3. **`seq_no range ±5` → `edges { node { ... } }`** — legacy schema fallback
+
+### `chain_order` Timestamp Decoding
+
+Per official Acki Nacki docs, `chain_order` encodes the Unix timestamp in its first field:
+```
+chain_order = <len><timestamp_hex><len><placeholder><len><thread_id><len><height>
+
+Example: "7698320d0006700...061d4b1c0"
+  "7"        → field is 8 hex chars
+  "698320d0" → 0x698320d0 = 1770201296 (Unix timestamp)
+```
+This allows timestamp extraction even without `gen_utime`.
+
+### Cross-Epoch Reuse
+
+The reset block of epoch N is the **exact same block** as the start block of epoch N+1:
+
+```
+Epoch 209 reset block = 55,020,000
+Epoch 210 start block = 55,020,000  ← same block, fetched once
+```
+
+When epoch N's reset timestamp is missing, the bot automatically reuses epoch N+1's cached start — no extra API call.
+
+### Stale Record Healing
+
+If epoch N was stored before epoch N+1 existed (reset showed `pending`), calling `/epoch N` again detects epoch N+1's start in the store, fills in the missing reset, recalculates the duration, and saves the updated record to GitHub automatically.
+
+### Background Caching
+
+Runs silently on every `/status`, Update button press, and `/start`:
+- Captures the **current epoch's start block** timestamp immediately while it's within the 24h window
+- Fills the **previous epoch's reset** using the current epoch's start (same block)
+- Saves to GitHub only if new data was captured
+
+---
+
+## 💾 Data Storage Schema
+
+All data stored in GitHub as JSON:
 
 ```json
 {
-  "chat_id:user_id": {
-    "start_time": 1713878400,
-    "msg_id": 12345,
-    "days": [
-      {
-        "day_num": 1,
-        "start_date": "23 Apr 2026",
-        "start_time": "12:00 PM",
-        "reset_date": "24 Apr 2026",
-        "reset_time": "11:55 AM"
-      },
-      {
-        "day_num": 2,
-        "start_date": "24 Apr 2026",
-        "start_time": "11:55 AM",
-        "reset_date": "25 Apr 2026",
-        "reset_time": "11:50 AM"
-      }
-    ]
-  }
+  "chat_id": {
+    "pin_msg_id": 12345,
+    "dashboard_msg_id": 12346
+  },
+  "history": [
+    {
+      "kind": "auto_reset",
+      "epoch_no": 209,
+      "start_block": 54758000,
+      "reset_block": 55020000,
+      "start_timestamp": 1747093260,
+      "reset_timestamp": 1747184200,
+      "start_fmt": "13/05/2026 | 12:21 AM | UTC:18:51",
+      "reset_fmt": "14/05/2026 | 01:30 AM | UTC:20:00",
+      "exact_start_time": "2026-05-13 18:51:00 UTC",
+      "exact_reset_time": "2026-05-14 20:00:00 UTC",
+      "epoch_duration": "25h 9m",
+      "epoch_duration_seconds": 90540,
+      "start_hash": "1d24a55d896f02aa...",
+      "reset_hash": "d0e65643af0f2f49...",
+      "start_url": "https://dev.acki.live/blocks/1d24a55d...",
+      "reset_url": "https://dev.acki.live/blocks/d0e65643..."
+    }
+  ]
 }
 ```
 
 ---
 
-## 🔧 Configuration
-
-### Environment Variables
-
-| Variable | Required | Type | Example | Description |
-|----------|----------|------|---------|-------------|
-| `BOT_TOKEN` | ✅ | String | `123456:ABC...` | Telegram Bot Token |
-| `GITHUB_TOKEN` | ✅ | String | `ghp_xxx...` | GitHub Personal Access Token |
-| `GITHUB_REPO` | ✅ | String | `username/repo` | GitHub repo for storage |
-| `GITHUB_FILE` | ⚠️ | String | `data.json` | Filename (default: data.json) |
-
-### Core Constants (in `asgi.py`)
+## 🔧 Core Constants
 
 ```python
-EPOCH_SECONDS = 330                    # Seconds per epoch
-TOTAL_EPOCHS = 288                     # Epochs per day
-DAILY_RESET_SECONDS = 89700            # 24h 55m in seconds
-DAILY_TAP_LIMIT = 12000                # Daily tap limit
-TAPS_PER_EPOCH = 70                    # Taps per epoch
-IST = timezone(timedelta(hours=5, minutes=30))  # Timezone
-```
-
----
-
-## 📈 Analytics Dashboard
-
-Click **📈 Analysis** button to view complete history:
-
-```
-📈 Analysis - Daily Cycle History
-
-Day | Start Date       | Start Time    | Reset Date       | Reset Time
-─────────────────────────────────────────────────────────────────────
-  1 | 23 Apr 2026      | 12:00 PM      | 24 Apr 2026      | 11:55 AM
-  2 | 24 Apr 2026      | 11:55 AM      | 25 Apr 2026      | 11:50 AM
-  3 | 25 Apr 2026      | 11:50 AM      | 26 Apr 2026      | 11:45 AM
-  4 | 26 Apr 2026      | 11:45 AM      | 27 Apr 2026      | 11:40 AM
-```
-
-- Automatically tracks every day
-- Persists across bot restarts
-- Accessible via GitHub data file
-
----
-
-## 🎯 Live Dashboard Display
-
-Example of real-time dashboard:
-
-```
-📊 Live Dashboard (Day 3)
-
-⏱️ 14h 32m
-🔢 Epoch: 156/288
-📍 Part 2 (Medium reward)
-
-🪙 Daily Reward Plan
-• Tap limit: 12,000 taps/day
-• Usable epochs today: 156/172
-• 80% reward zone: 1–96 epochs
-• 20% reward zone: 97–172 epochs
-• 80% zone used: 96/96
-• 20% zone used: 60/76
-• 80% zone left: 0/96
-• 20% zone left: 16/76
-
-📊 Taps Summary
-• Taps done: 10,920
-• Taps left: 1,080
-
-🧭 Phase Timings (Day 3)
-• Part 1: 25 Apr 11:50 AM IST
-• Part 2: 25 Apr 07:38 PM IST
-• Part 3: 26 Apr 03:26 AM IST
-
-⏳ Left: 9h 28m
-🔁 Reset: 26 Apr 11:45 AM IST
-```
-
----
-
-## 🐛 Troubleshooting
-
-### Bot not responding to commands
-
-**Solution:**
-1. Verify webhook is correctly set:
-   ```bash
-   curl https://api.telegram.org/botBOT_TOKEN/getWebhookInfo
-   ```
-2. Check Vercel deployment status in dashboard
-3. Review logs: Vercel → Deployments → Logs
-4. Verify environment variables are set
-
-### Webhook setup fails
-
-**Solution:**
-- Ensure URL ends with `/asgi.py`
-- Remove any trailing slashes
-- Wait 5 minutes and retry
-- Check URL is HTTPS (not HTTP)
-
-### Data not persisting
-
-**Solution:**
-1. Verify GitHub PAT has `repo` scope:
-   - Settings → Developer Settings → Personal Access Tokens
-   - Scopes should include: ✅ `repo` (full)
-
-2. Confirm `data.json` exists in repository
-3. Check `GITHUB_REPO` format: `username/repo-name`
-4. Verify GitHub API rate limits aren't exceeded
-
-### Times showing incorrectly
-
-**Solution:**
-- Bot uses IST (UTC+5:30) timezone
-- To change timezone, modify this line:
-  ```python
-  IST = timezone(timedelta(hours=YOUR_OFFSET))
-  ```
-
-### Dashboard not updating
-
-**Solution:**
-- Message is pinned (intentional design)
-- Message updates in-place to prevent spam
-- In groups: verify bot has admin rights
-- Clear browser cache if viewing via API
-
----
-
-## 🔒 Security Best Practices
-
-- ✅ Store all tokens in environment variables
-- ✅ Never commit `.env` file to repository
-- ✅ Use `.gitignore` to exclude sensitive files
-- ✅ Regenerate GitHub PAT periodically
-- ✅ Limit PAT scope to minimum required (`repo` only)
-- ✅ Use HTTPS for all API calls
-- ✅ Keep dependencies updated
-
-### Recommended `.gitignore`
-```
-.env
-.env.local
-*.pyc
-__pycache__/
-.vercel/
-node_modules/
+BLOCKS_PER_EPOCH     = 262_000
+TIER_1_END           = 262_000 // 3          # 87,333
+TIER_2_END           = (262_000 * 2) // 3    # 174,666
+AVG_BLOCK_TIME       = 0.33                  # seconds, fallback only
+GRAPHQL_URL_PRIMARY  = "https://mainnet.ackinacki.org/graphql"
+GRAPHQL_URL_FALLBACK = "https://mainnet-cf.ackinacki.org/graphql"
+EXPLORER_BASE        = "https://dev.acki.live/blocks"
+IST                  = UTC+5:30
+CEST                 = UTC+2:00
 ```
 
 ---
@@ -343,14 +320,11 @@ node_modules/
 
 ```
 epoch-helper-bot/
-├── asgi.py                 # Main bot application (ASGI)
-├── requirements.txt        # Python dependencies
-├── vercel.json            # Vercel deployment config
-├── .env.example           # Environment variables template
-├── .gitignore             # Git ignore rules
-├── README.md              # This file
-└── .github/
-    └── workflows/         # GitHub Actions (optional)
+├── asgi.py           # Main bot application (ASGI)
+├── requirements.txt  # Python dependencies
+├── vercel.json       # Vercel deployment config
+├── .gitignore        # Git ignore rules
+└── README.md         # This file
 ```
 
 ---
@@ -362,41 +336,58 @@ epoch-helper-bot/
 | **Language** | Python 3.8+ | Backend logic |
 | **Bot Framework** | python-telegram-bot | Telegram API wrapper |
 | **Server** | ASGI (Vercel) | Serverless hosting |
-| **Storage** | GitHub REST API | Data persistence |
-| **Timezone** | pytz / datetime | IST timezone handling |
+| **Storage** | GitHub REST API | Persistent data |
+| **Blockchain** | Acki Nacki GraphQL | Live block data & timestamps |
+| **Explorer** | dev.acki.live | Block detail links |
+| **Timezone** | datetime / pytz | IST / UTC / CEST display |
 
 ---
 
-## ⚡ Performance Metrics
+## 🐛 Troubleshooting
 
-| Metric | Value |
-|--------|-------|
-| **Response Time** | < 2 seconds per command |
-| **Memory Usage** | ~50MB per instance |
-| **Cold Start** | 1-2 seconds (Vercel) |
-| **Data per User** | ~1KB per day |
-| **API Calls per Interaction** | 2 (read + write) |
-| **Concurrent Users** | Unlimited (serverless) |
+### Dashboard not sending on `/start`
+- Check `reward_tier()` strings don't contain raw `<` or `>` — these break `parse_mode="HTML"`
+- Must be escaped as `&lt;` and `&gt;`
+
+### Timestamps showing pending
+- API only holds ~24h of block history
+- Press Update or `/status` at least once per epoch (~25h) to cache timestamps while fresh
+- Calling `/epoch N` again after epoch N+1 is cached will auto-fill the pending reset
+
+### Block Info link not clickable
+- Requires `parse_mode="HTML"` (already default in current code)
+- Links use `<a href="...">Block Info 🔗</a>` HTML anchor format
+
+### Bot not responding
+1. Verify webhook: `curl https://api.telegram.org/bot{BOT_TOKEN}/getWebhookInfo`
+2. Check Vercel deployment logs
+3. Verify all environment variables are set
+
+### Data not persisting
+1. Verify GitHub PAT has `repo` scope
+2. Confirm `data.json` exists in the repo
+3. Check `GITHUB_REPO` is `username/repo-name` format
+
+### Webhook setup fails
+- URL must end with `/asgi.py`
+- Must be HTTPS, no trailing slash
 
 ---
 
-## 📝 API Reference
+## 🔒 Security
 
-### GitHub API Endpoints Used
-```
-GET  /repos/{owner}/{repo}/contents/{path}
-PUT  /repos/{owner}/{repo}/contents/{path}
-```
+- ✅ All tokens stored in environment variables only
+- ✅ DM access restricted to bot owner; others receive friendly group redirect
+- ✅ Group access open to all members
+- ✅ Never commit `.env` to repository
 
-### Telegram Bot Methods Used
+### Recommended `.gitignore`
 ```
-sendMessage()
-editMessageText()
-pinChatMessage()
-unpinChatMessage()
-getChat()
-deleteMessage()
-answerCallbackQuery()
+.env
+.env.local
+*.pyc
+__pycache__/
+.vercel/
 ```
 
 ---
@@ -404,124 +395,62 @@ answerCallbackQuery()
 ## 🚀 Deployment Options
 
 ### Option 1: Vercel (Recommended) ⭐
-- Easiest setup
 - Free tier available
-- Auto-deploys on push
-- See [Quick Start](#-quick-start)
+- Auto-deploys on every push
+- Serverless — scales automatically
 
-### Option 2: Heroku
-```bash
-heroku create your-app-name
-git push heroku main
-heroku config:set BOT_TOKEN=... GITHUB_TOKEN=... GITHUB_REPO=...
-```
-
-### Option 3: Self-Hosted
+### Option 2: Self-Hosted
 ```bash
 python -m uvicorn asgi:app --host 0.0.0.0 --port 8000
 ```
 
 ---
 
+## 📝 Telegram API Methods Used
+
+```
+sendMessage()
+editMessageText()
+pinChatMessage()
+deleteMessage()
+answerCallbackQuery()
+```
+
+---
+
 ## 📄 License
 
-This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
-
-```
-MIT License
-
-Copyright (c) 2026 Epoch Helper Bot
-
-Permission is hereby granted, free of charge, to any person obtaining a copy
-of this software and associated documentation files (the "Software"), to deal
-in the Software without restriction, including without limitation the rights
-to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
-copies of the Software, and to permit persons to whom the Software is
-furnished to do so, subject to the following conditions:
-
-The above copyright notice and this permission notice shall be included in all
-copies or substantial portions of the Software.
-```
-
----
-
-## 🤝 Contributing
-
-Contributions are welcome! Please follow these steps:
-
-1. **Fork the Repository**
-   ```bash
-   git clone https://github.com/yourusername/epoch-helper-bot.git
-   ```
-
-2. **Create a Feature Branch**
-   ```bash
-   git checkout -b feature/amazing-feature
-   ```
-
-3. **Make Your Changes**
-   - Follow Python PEP 8 style guide
-   - Add comments for complex logic
-   - Test thoroughly
-
-4. **Commit Changes**
-   ```bash
-   git commit -m "Add amazing feature"
-   ```
-
-5. **Push to Branch**
-   ```bash
-   git push origin feature/amazing-feature
-   ```
-
-6. **Open a Pull Request**
-   - Describe changes clearly
-   - Reference any related issues
-   - Request review
-
----
-
-## 📞 Support & Contact
-
-- **Issues**: [Open GitHub Issue](https://github.com/yourusername/epoch-helper-bot/issues)
-- **Discussions**: [GitHub Discussions](https://github.com/yourusername/epoch-helper-bot/discussions)
-- **Telegram**: Direct message bot owner
-- **Email**: your.email@example.com
+MIT License — see [LICENSE](LICENSE) for details.
 
 ---
 
 ## 🎉 Changelog
 
-### v1.0.0 (2026-04-23)
-- ✅ Initial release
-- ✅ Real-time pinned dashboard
-- ✅ 24h 55m daily reset cycle
-- ✅ Continuous cycling support
-- ✅ Daily analytics and history
-- ✅ GitHub-based data storage
-- ✅ Manual time setting
-- ✅ Group chat support
+### v2.1.0 (May 2026)
+- ✅ Fixed dashboard not sending — HTML `<` `>` in tier strings escaped as `&lt;` `&gt;`
+- ✅ Stale record healing — pending reset times auto-filled when next epoch is cached
+- ✅ Tier progress % calculated within current tier's range only (not full epoch)
+- ✅ DM redirect message updated with friendly explanation
+
+### v2.0.0 (May 2026)
+- ✅ Full rewrite — blockchain-native (Acki Nacki GraphQL)
+- ✅ Real block height tracking, no time-based estimation
+- ✅ Exact timestamps from `gen_utime` and `chain_order` decoding
+- ✅ Explorer links via `dev.acki.live/blocks/<hash>`
+- ✅ Multi-strategy timestamp fetching with cross-epoch reuse
+- ✅ Background epoch caching on every user interaction
+- ✅ `!command` syntax support alongside `/command`
+- ✅ IST + UTC + CEST timezone display
+- ✅ `/epoch <n>` single epoch report with explorer links
+- ✅ `/analysis` last 3 completed epochs
+- ✅ Duplicate `/start` protection — deletes old messages first
+- ✅ `parse_mode="HTML"` throughout with `<code>` block values
+
+### v1.0.0 (April 2026)
+- ✅ Initial release with time-based epoch tracking
 
 ---
 
-## 🌟 Credits
-
-Created for efficient epoch tracking with persistent analytics.
-
-**Built with:**
-- ❤️ Python
-- 🤖 Telegram Bot API
-- 📊 GitHub
-- ☁️ Vercel
-
----
-
-## 📊 Star History
-
-If you find this project useful, please give it a ⭐!
-
----
-
-**Last Updated**: April 2026  
-**Status**: Active & Maintained  
+**Last Updated**: May 2026
+**Status**: Active & Maintained
 **Python Version**: 3.8+

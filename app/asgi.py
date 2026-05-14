@@ -40,7 +40,7 @@ GRAPHQL_URL_FALLBACK = "https://mainnet-cf.ackinacki.org/graphql"
 GITHUB_API = f"https://api.github.com/repos/{GITHUB_REPO}/contents/{GITHUB_FILE}"
 
 DEFAULT_ENDPOINTS    = "mainnet.ackinacki.org,mainnet-cf.ackinacki.org"
-DEFAULT_SAMPLE_BLOCKS = 1000
+DEFAULT_SAMPLE_BLOCKS = 120
 
 # Callback-data constants
 CB_UPDATE_DASHBOARD = "update_dashboard"
@@ -718,28 +718,44 @@ async def _try_edit(chat_id, msg_id, text, reply_markup=None):
 
 async def do_dashboard_update(chat, forum, snapshot, store, sha):
     """
-    Used by both the inline button and /status.
-    Edits the two stored messages in place.
-    If either was deleted → tells user to /start.  Never pins or sends new messages.
+    Updates the dashboard for ALL chats that have done /start.
+    Triggered by: Update button, /status, !status — from any group or user.
+    /start stays per-chat and is never affected here.
     """
-    pins             = get_chat_pins(store, chat)
-    pin_msg_id       = pins.get("pin_msg_id")
-    dashboard_msg_id = pins.get("dashboard_msg_id")
+    pin_text  = build_pin_text(snapshot)
+    dash_text = build_dashboard_text(snapshot)
 
-    if not pin_msg_id or not dashboard_msg_id:
+    all_pins = store.get("chat_pins", {})
+
+    if not all_pins:
         await send_text(chat, "ℹ️ No dashboard found. Send /start to set it up.", forum=forum)
         return
 
-    pin_res  = await _try_edit(chat, pin_msg_id, build_pin_text(snapshot))
-    dash_res = await _try_edit(chat, dashboard_msg_id, build_dashboard_text(snapshot),
-                               reply_markup=_update_button())
+    any_updated = False
 
-    if pin_res == "deleted" or dash_res == "deleted":
-        await send_text(
-            chat,
-            "⚠️ Dashboard messages were deleted.\nSend /start to create a fresh one.",
-            forum=forum,
-        )
+    for target_chat, pins in all_pins.items():
+        if not isinstance(pins, dict):
+            continue
+        pin_msg_id       = pins.get("pin_msg_id")
+        dashboard_msg_id = pins.get("dashboard_msg_id")
+
+        if not pin_msg_id or not dashboard_msg_id:
+            continue
+
+        pin_res  = await _try_edit(target_chat, pin_msg_id, pin_text)
+        dash_res = await _try_edit(target_chat, dashboard_msg_id, dash_text,
+                                   reply_markup=_update_button())
+
+        if pin_res in ("ok", "error") or dash_res in ("ok", "error"):
+            any_updated = True
+
+        if pin_res == "deleted" or dash_res == "deleted":
+            # Messages deleted in that chat — clear stored IDs so it doesn't retry
+            pins["pin_msg_id"]       = None
+            pins["dashboard_msg_id"] = None
+
+    if any_updated:
+        await save_data_async(store, sha)
 
 # ============================================================
 # Command parser — strips @BotUsername suffix
@@ -1164,7 +1180,7 @@ async def handle(update: Update):
         await send_fresh_dashboard(chat, forum, snapshot, store, sha)
         return
 
-    # /status — edits the two stored messages, never sends new ones
+    # /status or !status — updates dashboard for ALL chats
     if cmd == "/status":
         snapshot = await loading_flow(
             chat, forum,

@@ -558,9 +558,9 @@ def format_blockchain_time(unix_ts):
 
 
 def reward_tier(in_epoch):
-    if in_epoch < TIER_1_END: return "Tier 1 — High Reward  (<6 k taps)"
-    if in_epoch < TIER_2_END: return "Tier 2 — Medium Reward (>6 k taps)"
-    return                           "Tier 3 — Low Reward   (>12 k taps)"
+    if in_epoch < TIER_1_END: return "Tier 1 — High Reward  (&lt;6k taps)"
+    if in_epoch < TIER_2_END: return "Tier 2 — Medium Reward (&gt;6k taps)"
+    return                           "Tier 3 — Low Reward   (&gt;12k taps)"
 
 
 def tier_progress(in_epoch):

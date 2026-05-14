@@ -12,7 +12,7 @@ from telegram.error import BadRequest
 BOT_TOKEN  = os.environ.get("BOT_TOKEN")
 GITHUB_TOKEN = os.environ.get("GITHUB_TOKEN")
 GITHUB_REPO  = os.environ.get("GITHUB_REPO")
-GITHUB_FILE  = os.environ.get("GITHUB_FILE", "data.json")
+GITHUB_FILE  = os.environ.get("GITHUB_FILE", "epochradar.json")
 
 OWNER_IDS       = "1837260280"
 TARGET_THREAD_ID = 3

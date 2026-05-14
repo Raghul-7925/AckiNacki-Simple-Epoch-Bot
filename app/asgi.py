@@ -1229,30 +1229,34 @@ async def handle(update: Update):
             s, sh = await load_data_async()
             rec   = find_history_record(s, epoch_no)
 
-            # If we have a record but reset_timestamp is missing,
-            # try to fill it from epoch N+1's start_timestamp (same block).
+            def _fill_reset_from_next(r, next_r):
+                """Fill missing reset fields in r using next epoch's start. Returns True if changed."""
+                if not next_r or not next_r.get("start_timestamp"):
+                    return False
+                r["reset_timestamp"]  = next_r["start_timestamp"]
+                r["reset_fmt"]        = next_r.get("start_fmt", "pending")
+                r["exact_reset_time"] = next_r.get("exact_start_time", "pending")
+                r["reset_hash"]       = next_r.get("start_hash")
+                r["reset_url"]        = next_r.get("start_url")
+                st = r.get("start_timestamp")
+                rt = r["reset_timestamp"]
+                if st and rt and rt > st:
+                    dur = rt - st
+                    r["epoch_duration"]         = format_duration(dur)
+                    r["epoch_duration_seconds"] = dur
+                return True
+
+            # Always check if next epoch's start can fill a missing reset —
+            # even if the record already exists (it may have been stored before
+            # epoch N+1 was cached).
             if rec and not rec.get("reset_timestamp"):
                 next_rec = find_history_record(s, epoch_no + 1)
-                if next_rec and next_rec.get("start_timestamp"):
-                    rec["reset_timestamp"] = next_rec["start_timestamp"]
-                    rec["reset_fmt"]       = next_rec.get("start_fmt", "pending")
-                    rec["exact_reset_time"]= next_rec.get("exact_start_time", "pending")
-                    rec["reset_hash"]      = next_rec.get("start_hash")
-                    rec["reset_url"]       = next_rec.get("start_url")
-                    st = rec.get("start_timestamp")
-                    rt = rec["reset_timestamp"]
-                    if st and rt and rt > st:
-                        dur = rt - st
-                        h_val, m_val = dur // 3600, (dur % 3600) // 60
-                        rec["epoch_duration"]         = format_duration(dur)
-                        rec["epoch_duration_seconds"] = dur
+                if _fill_reset_from_next(rec, next_rec):
                     s["history"].sort(key=lambda x: normalize_uint(x.get("epoch_no")))
                     await save_data_async(s, sh)
                     return rec
 
             if rec is None:
-                # Before fetching reset from API (likely >24h old),
-                # check if epoch N+1's start is already cached — same block.
                 prefetch_reset = None
                 next_rec = find_history_record(s, epoch_no + 1)
                 if next_rec and next_rec.get("start_timestamp"):

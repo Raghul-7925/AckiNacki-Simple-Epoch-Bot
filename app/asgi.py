@@ -605,7 +605,7 @@ def build_dashboard_text(snapshot):
         f"• Current Block Height: <code>{cb:,}</code>\n"
         f"• Epoch {en} Started at: <code>{start:,}</code>\n"
         f"• Epoch {en} Resets at: <code>{reset:,}</code>\n"
-        f"• Blocks Produced This Epoch: <code>{done:,}</code>\n"
+        f"• Blocks Produced Today: <code>{done:,}</code>\n"
         f"• Blocks Left to Reset: <code>{left:,}</code>\n"
         f"• Progress: {pct:.1f}%\n\n"
         f"🔁 Estimated Reset\n"

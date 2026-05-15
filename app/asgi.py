@@ -605,7 +605,7 @@ def build_dashboard_text(snapshot):
         f"• Current Block Height: <code>{cb:,}</code>\n"
         f"• Epoch {en} Started at: <code>{start:,}</code>\n"
         f"• Epoch {en} Resets at: <code>{reset:,}</code>\n"
-        f"• Blocks Produced: <code>{done:,}</code>\n"
+        f"• Blocks Produced This Epoch: <code>{done:,}</code>\n"
         f"• Blocks Left to Reset: <code>{left:,}</code>\n"
         f"• Progress: {pct:.1f}%\n\n"
         f"🔁 Estimated Reset\n"
@@ -630,7 +630,7 @@ def build_pin_text(snapshot):
     reset_ist = reset_dt.astimezone(IST)
 
     return (
-        f"⏳ Time Left To Reset: {format_duration(remaining)}\n\n"
+        f"⏳ Time Left To Reset: {format_duration(remaining)}\n"
         f"📌 Est. reset: {reset_ist.strftime('%d/%m %I:%M %p')} IST"
     )
 
@@ -963,6 +963,55 @@ async def ensure_last_n_epochs(store, current_block, n=ANALYSIS_EPOCH_COUNT):
 
 
 
+async def heal_pending_records(store, sha):
+    """
+    Scan ALL stored history records that have a missing reset_timestamp.
+    For each one, check if epoch N+1's start_timestamp is already cached
+    (they are the same block). If yes, fill in reset fields and recalculate
+    duration. Saves to GitHub once if anything changed.
+
+    Called on every Update button press and /status so no epoch ever
+    stays pending once the next epoch's start is captured.
+    """
+    hist    = store.get("history", [])
+    changed = False
+
+    # Build lookup: epoch_no -> record
+    by_epoch = {normalize_uint(r.get("epoch_no")): r for r in hist if isinstance(r, dict)}
+
+    for rec in hist:
+        if not isinstance(rec, dict):
+            continue
+        if rec.get("reset_timestamp"):
+            continue  # already filled
+
+        en       = normalize_uint(rec.get("epoch_no"))
+        next_rec = by_epoch.get(en + 1)
+        if not next_rec or not next_rec.get("start_timestamp"):
+            continue  # next epoch not cached yet — nothing to do
+
+        rec["reset_timestamp"]  = next_rec["start_timestamp"]
+        rec["reset_fmt"]        = next_rec.get("start_fmt", "pending")
+        rec["exact_reset_time"] = next_rec.get("exact_start_time", "pending")
+        rec["reset_hash"]       = next_rec.get("start_hash")
+        rec["reset_url"]        = next_rec.get("start_url")
+        st = rec.get("start_timestamp")
+        rt = rec["reset_timestamp"]
+        if st and rt and rt > st:
+            dur = rt - st
+            rec["epoch_duration"]         = format_duration(dur)
+            rec["epoch_duration_seconds"] = dur
+        changed = True
+
+    if changed and sha:
+        try:
+            await save_data_async(store, sha)
+        except Exception as e:
+            print(f"heal_pending_records save: {e}")
+
+    return changed
+
+
 def build_analysis_report(store, current_block=None, n=ANALYSIS_EPOCH_COUNT):
     """Show only the last n completed epochs, most recent last."""
     hist = store.get("history", [])
@@ -1122,6 +1171,8 @@ async def handle(update: Update):
             
             # Update dashboard
             await do_dashboard_update(chat, forum, snapshot, store, sha)
+            # Heal any pending reset timestamps using cached next-epoch data
+            asyncio.create_task(heal_pending_records(store, sha))
             return
 
         # 🔄 Refresh button on /blocks message
@@ -1189,6 +1240,8 @@ async def handle(update: Update):
         )
         store, sha = await load_data_async()
         await do_dashboard_update(chat, forum, snapshot, store, sha)
+        # Heal any pending reset timestamps using cached next-epoch data
+        asyncio.create_task(heal_pending_records(store, sha))
         return
 
     # /blocks — live block height with 🔄 Refresh inline button
@@ -1327,6 +1380,11 @@ async def handle(update: Update):
 # ASGI entry point
 # ============================================================
 
+# Deduplication: track recently processed update IDs to ignore Telegram retries
+_seen_update_ids: set = set()
+_MAX_SEEN = 500  # keep memory bounded
+
+
 async def app(scope, receive, send):
     if scope["type"] != "http":
         return
@@ -1337,12 +1395,30 @@ async def app(scope, receive, send):
         body += m.get("body", b"")
         more  = m.get("more_body", False)
 
+    # ── Respond 200 immediately so Telegram stops retrying ──────────────
+    # Telegram has a 3-second webhook timeout. Cold-start + GitHub + GraphQL
+    # easily exceeds that, causing duplicate retries. We ack first, process after.
+    await send({"type": "http.response.start", "status": 200,
+                "headers": [[b"content-type", b"text/plain"]]})
+    await send({"type": "http.response.body", "body": b"ok"})
+
+    # ── Process update after responding ─────────────────────────────────
     try:
-        data   = json.loads(body.decode())
+        data      = json.loads(body.decode())
+        update_id = data.get("update_id")
+
+        # Ignore duplicates — Telegram retries deliver the same update_id
+        if update_id is not None:
+            if update_id in _seen_update_ids:
+                return
+            _seen_update_ids.add(update_id)
+            if len(_seen_update_ids) > _MAX_SEEN:
+                # Prune oldest half to keep memory bounded
+                to_remove = sorted(_seen_update_ids)[:_MAX_SEEN // 2]
+                for uid in to_remove:
+                    _seen_update_ids.discard(uid)
+
         update = Update.de_json(data, bot)
         await handle(update)
     except Exception as e:
-        print(e)
-
-    await send({"type": "http.response.start", "status": 200})
-    await send({"type": "http.response.body",  "body": b"ok"})
+        print(f"app handler error: {e}")

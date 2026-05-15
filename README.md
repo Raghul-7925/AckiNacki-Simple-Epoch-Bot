@@ -1,6 +1,6 @@
-# ⏱️ AN Epoch Helper Bot
+# ⏱️ AckiNacki Mobile Verifiers Epoch Monitor Bot
 
-> **A smart Telegram bot for tracking Acki Nacki blockchain epochs in real-time — live dashboard, exact block timestamps, explorer links, reward tier tracking, and persistent analytics.**
+> **A smart Telegram bot for tracking Acki Nacki Blockchain Mobile Verifier's epochs in real-time — live dashboard, exact block timestamps, explorer links, reward tier tracking, and persistent analytics.**
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![Python 3.8+](https://img.shields.io/badge/python-3.8+-blue.svg)](https://www.python.org/downloads/)

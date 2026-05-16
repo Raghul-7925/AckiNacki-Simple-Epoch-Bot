@@ -45,12 +45,10 @@ DEFAULT_SAMPLE_BLOCKS = 150
 # Callback-data constants
 CB_UPDATE_DASHBOARD = "update_dashboard"
 CB_REFRESH_BLOCKS   = "refresh_blocks"
-CB_LIVE_BLOCKS      = "live_blocks_stop"
+CB_LIVE_TOGGLE      = "live_toggle"
 
-# chat_id -> {msg_id, forum, task}  for live /blocks auto-update
-_live_blocks: dict = {}
-# chat_id -> {msg_id, forum, task}  for live /speed auto-update
-_live_speed:  dict = {}
+# chat_id -> {msg_id, forum, task, running}  for /live auto-update
+_live_state: dict = {}
 
 # ============================================================
 # GitHub storage
@@ -630,24 +628,20 @@ def tier_progress(in_epoch):
 # Text builders
 # ============================================================
 
-def build_speed_text(snapshot):
-    blk_sec = snapshot.get("sampleBlockSec")
+def build_live_text(snapshot):
     cb      = snapshot["currentHeight"]
     cur_ts  = snapshot.get("currentTimestamp") or int(datetime.now(UTC).timestamp())
+    blk_sec = snapshot.get("sampleBlockSec")
     dt_utc  = datetime.fromtimestamp(cur_ts, UTC)
     dt_ist  = dt_utc.astimezone(IST)
 
-    if blk_sec and blk_sec > 0:
-        bps = 1 / blk_sec
-        speed_str = f"{bps:.2f} blocks/sec  ({blk_sec:.3f}s/block)"
-    else:
-        speed_str = "calculating…"
-
+    speed_str = f"{blk_sec:.3f}s/block" if blk_sec else "calculating…"
     emoji, extra = network_status_emoji(snapshot)
+
     line = (
-        f"{emoji} Live Block Speed\n"
-        f"• Block: <code>{cb:,}</code>\n"
-        f"• Time: {dt_ist.strftime('%d/%m %I:%M:%S %p')} IST\n"
+        f"{emoji} Live Block Height: <code>{cb:,}</code>\n"
+        f"• Time: {dt_ist.strftime('%I:%M:%S %p')} IST | "
+        f"UTC: {dt_utc.strftime('%H:%M:%S')}\n"
         f"• Speed: {speed_str}"
     )
     if extra:
@@ -655,54 +649,37 @@ def build_speed_text(snapshot):
     return line
 
 
-def _stop_button(cb_data):
-    return InlineKeyboardMarkup([[InlineKeyboardButton("⏹ Stop", callback_data=cb_data)]])
+def _live_buttons(running: bool):
+    toggle_label = "⏸ Pause" if running else "▶️ Resume"
+    return InlineKeyboardMarkup([[
+        InlineKeyboardButton(toggle_label, callback_data=CB_LIVE_TOGGLE),
+        InlineKeyboardButton("🔄 Refresh",  callback_data=CB_REFRESH_BLOCKS),
+    ]])
 
 
-async def _live_blocks_loop(chat, forum, msg_id):
-    """Auto-update the /blocks message every 5 seconds until stopped."""
+async def _live_loop(chat, forum, msg_id):
+    """Auto-update the /live message every second until paused/stopped."""
     try:
         while True:
-            await asyncio.sleep(5)
-            if chat not in _live_blocks:
+            await asyncio.sleep(1)
+            state = _live_state.get(chat)
+            if not state:
                 break
+            if not state.get("running"):
+                continue   # paused — keep loop alive but skip update
             try:
                 snap = await get_live_block_snapshot()
-                text = build_blocks_text(snap)
+                text = build_live_text(snap)
                 await bot.edit_message_text(
                     chat_id=int(chat), message_id=msg_id,
                     text=text, parse_mode="HTML",
-                    reply_markup=_stop_button(CB_LIVE_BLOCKS),
+                    reply_markup=_live_buttons(True),
                 )
             except Exception as e:
                 if "message is not modified" not in str(e).lower():
-                    print(f"live_blocks_loop: {e}")
-                    break
+                    print(f"live_loop: {e}")
     finally:
-        _live_blocks.pop(chat, None)
-
-
-async def _live_speed_loop(chat, forum, msg_id):
-    """Auto-update the /speed message every 5 seconds until stopped."""
-    try:
-        while True:
-            await asyncio.sleep(5)
-            if chat not in _live_speed:
-                break
-            try:
-                snap = await get_live_block_snapshot()
-                text = build_speed_text(snap)
-                await bot.edit_message_text(
-                    chat_id=int(chat), message_id=msg_id,
-                    text=text, parse_mode="HTML",
-                    reply_markup=_stop_button("live_speed_stop"),
-                )
-            except Exception as e:
-                if "message is not modified" not in str(e).lower():
-                    print(f"live_speed_loop: {e}")
-                    break
-    finally:
-        _live_speed.pop(chat, None)
+        _live_state.pop(chat, None)
 
 
 def build_dashboard_text(snapshot):
@@ -798,21 +775,8 @@ def build_pin_text(snapshot):
 
 
 def build_blocks_text(snapshot):
-    cb      = snapshot["currentHeight"]
-    cur_ts  = snapshot.get("currentTimestamp") or int(datetime.now(UTC).timestamp())
-    dt_utc  = datetime.fromtimestamp(cur_ts, UTC)
-    dt_ist  = dt_utc.astimezone(IST)
-    dt_cest = dt_utc.astimezone(CEST)
-    blk_sec = snapshot.get("sampleBlockSec")
-    speed   = f"{blk_sec:.3f}s/block" if blk_sec else "calculating…"
-    return (
-        f"📦 Live Block Height\n"
-        f"• Block: <code>{cb:,}</code>\n"
-        f"• IST:  {dt_ist.strftime('%d/%m %I:%M:%S %p')}\n"
-        f"• UTC:  {dt_utc.strftime('%d/%m %I:%M:%S %p')}\n"
-        f"• CEST: {dt_cest.strftime('%d/%m %I:%M:%S %p')}\n"
-        f"• Speed: {speed}"
-    )
+    """Kept for the 🔄 Refresh callback — returns same format as build_live_text."""
+    return build_live_text(snapshot)
 
 # ============================================================
 # Dashboard lifecycle
@@ -1307,33 +1271,20 @@ async def handle(update: Update):
         cq   = update.callback_query
         data = cq.data or ""
 
-        # ⏹ Stop live blocks
-        if data == CB_LIVE_BLOCKS:
-            entry = _live_blocks.pop(chat, None)
-            if entry:
-                t = entry.get("task")
-                if t: t.cancel()
+        # ⏸/▶️ Toggle live updates
+        if data == CB_LIVE_TOGGLE:
+            state = _live_state.get(chat)
+            if not state:
+                await cq.answer("No live session found. Send /live to start.")
+                return
+            running = not state.get("running", True)
+            state["running"] = running
+            label = "▶️ Resumed live updates." if running else "⏸ Live updates paused."
             try:
-                await cq.answer("⏹ Live updates stopped.")
+                await cq.answer(label)
                 await bot.edit_message_reply_markup(
                     chat_id=int(chat), message_id=cq.message.message_id,
-                    reply_markup=_refresh_button(),
-                )
-            except Exception:
-                pass
-            return
-
-        # ⏹ Stop live speed
-        if data == "live_speed_stop":
-            entry = _live_speed.pop(chat, None)
-            if entry:
-                t = entry.get("task")
-                if t: t.cancel()
-            try:
-                await cq.answer("⏹ Live speed stopped.")
-                await bot.edit_message_reply_markup(
-                    chat_id=int(chat), message_id=cq.message.message_id,
-                    reply_markup=None,
+                    reply_markup=_live_buttons(running),
                 )
             except Exception:
                 pass
@@ -1396,12 +1347,14 @@ async def handle(update: Update):
             snapshot = await task
             
             # Update with final block data
+            running = _live_state.get(chat, {}).get("running", False)
             try:
                 await bot.edit_message_text(
                     chat_id=int(chat),
                     message_id=cq.message.message_id,
-                    text=build_blocks_text(snapshot),
-                    reply_markup=_refresh_button(),
+                    text=build_live_text(snapshot),
+                    parse_mode="HTML",
+                    reply_markup=_live_buttons(running),
                 )
             except BadRequest as e:
                 if "message is not modified" not in str(e).lower():
@@ -1441,39 +1394,22 @@ async def handle(update: Update):
         asyncio.create_task(heal_pending_records(store, sha))
         return
 
-    # /blocks — live block height, auto-updates every 5s
-    if cmd == "/blocks":
-        # Stop any existing live loop for this chat first
-        if chat in _live_blocks:
-            old_task = _live_blocks.pop(chat, {}).get("task")
-            if old_task:
-                old_task.cancel()
+    # /live — live block height + speed, auto-updates every second
+    if cmd in ("/live", "/blocks", "/speed"):
+        # Cancel any existing live session for this chat
+        old = _live_state.pop(chat, None)
+        if old and old.get("task"):
+            old["task"].cancel()
         snapshot = await loading_flow(
             chat, forum,
-            ["📡 Connecting to blockchain…", "🔍 Fetching block height…"],
+            ["📡 Connecting to blockchain…", "⚡ Starting live feed…"],
             get_live_block_snapshot(),
         )
-        msg = await send_text(chat, build_blocks_text(snapshot),
-                              forum=forum, reply_markup=_stop_button(CB_LIVE_BLOCKS))
-        task = asyncio.create_task(_live_blocks_loop(chat, forum, msg.message_id))
-        _live_blocks[chat] = {"msg_id": msg.message_id, "forum": forum, "task": task}
-        return
-
-    # /speed — live block production speed, auto-updates every 5s
-    if cmd == "/speed":
-        if chat in _live_speed:
-            old_task = _live_speed.pop(chat, {}).get("task")
-            if old_task:
-                old_task.cancel()
-        snapshot = await loading_flow(
-            chat, forum,
-            ["📡 Connecting to blockchain…", "⚡ Measuring block speed…"],
-            get_live_block_snapshot(),
-        )
-        msg = await send_text(chat, build_speed_text(snapshot),
-                              forum=forum, reply_markup=_stop_button("live_speed_stop"))
-        task = asyncio.create_task(_live_speed_loop(chat, forum, msg.message_id))
-        _live_speed[chat] = {"msg_id": msg.message_id, "forum": forum, "task": task}
+        msg  = await send_text(chat, build_live_text(snapshot),
+                               forum=forum, reply_markup=_live_buttons(True))
+        task = asyncio.create_task(_live_loop(chat, forum, msg.message_id))
+        _live_state[chat] = {"msg_id": msg.message_id, "forum": forum,
+                              "task": task, "running": True}
         return
 
     # /analysis — last 3 completed epochs
@@ -1598,11 +1534,10 @@ async def handle(update: Update):
             "🧭 Bot Commands\n\n"
             "▶️ /start      — Pinned countdown + dashboard with Update button\n"
             "📊 /status    — Edit dashboard & pin in place\n"
-            "📦 /blocks    — Live block height with Refresh button\n"
+            "📡 /live      — Live block height + speed (auto-updates every second)\n"
             "📈 /analysis  — Full epoch history (all epochs)\n"
             "🔎 /epoch 205  — Exact report for a single epoch\n"
             "🔎 /epoch 205,206 — Report for multiple epochs\n"
-            "⚡ /speed       — Live block production speed\n"
             "ℹ️ /help      — Show this help\n\n"
             "💡 All commands work with @BotUsername suffix in groups.\n"
             "   e.g. /start@epoch_helper_bot"

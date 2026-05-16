@@ -45,6 +45,12 @@ DEFAULT_SAMPLE_BLOCKS = 150
 # Callback-data constants
 CB_UPDATE_DASHBOARD = "update_dashboard"
 CB_REFRESH_BLOCKS   = "refresh_blocks"
+CB_LIVE_BLOCKS      = "live_blocks_stop"
+
+# chat_id -> {msg_id, forum, task}  for live /blocks auto-update
+_live_blocks: dict = {}
+# chat_id -> {msg_id, forum, task}  for live /speed auto-update
+_live_speed:  dict = {}
 
 # ============================================================
 # GitHub storage
@@ -240,7 +246,15 @@ async def graphql_fetch(query, retries_per_endpoint=2):
     raise last_err if last_err else RuntimeError("GraphQL failed on all endpoints")
 
 
+# How many seconds since last block before we consider production stalled
+STALL_THRESHOLD_SEC = 120   # 2 minutes
+
+# Track the last known good block globally for stall detection
+_last_known_block: dict = {}   # {"seq_no": int, "gen_utime": int, "wall_time": float}
+
+
 async def get_live_block_snapshot():
+    global _last_known_block
     n = max(3, env_int("BLOCK_SAMPLE_BLOCKS", DEFAULT_SAMPLE_BLOCKS))
     query = f"""
     query {{
@@ -251,7 +265,20 @@ async def get_live_block_snapshot():
         }}
     }}
     """
-    result = await graphql_fetch(query)
+
+    # ── Try to fetch ─────────────────────────────────────────────────────
+    try:
+        result = await graphql_fetch(query)
+    except Exception:
+        # Network unreachable — return last known snapshot with warning flag
+        snap = dict(_last_known_block) if _last_known_block else {}
+        snap["reachable"]  = False
+        snap["noBlocks"]   = False
+        snap["stalledSince"] = None
+        if not snap.get("currentHeight"):
+            raise  # never had a good snapshot — re-raise so caller can handle
+        return snap
+
     edges  = (
         result.get("json", {}).get("data", {})
         .get("blockchain", {}).get("blocks", {}).get("edges", [])
@@ -279,13 +306,37 @@ async def get_live_block_snapshot():
         if ds > 0 and dt >= 0:
             sample_block_sec = dt / ds
 
-    return {
+    now_wall = datetime.now(UTC).timestamp()
+
+    # Detect stall: same block height as last time, but wall clock moved
+    stalled_since = None
+    no_blocks     = False
+    if _last_known_block:
+        prev_height = _last_known_block.get("currentHeight", 0)
+        if last["seq_no"] == prev_height:
+            # Height unchanged — check how long it's been
+            since = now_wall - _last_known_block.get("wall_time", now_wall)
+            if since >= STALL_THRESHOLD_SEC:
+                stalled_since = last["gen_utime"]  # timestamp of last block seen
+        # No blocks at all in sample (seq_nos all zero)
+        if last["seq_no"] == 0:
+            no_blocks = True
+
+    snap = {
         "sourceUrl":        result["url"],
         "currentHeight":    last["seq_no"],
         "currentTimestamp": last["gen_utime"],
         "sampleBlockSec":   sample_block_sec,
         "sampleBlocks":     len(parsed),
+        "reachable":        True,
+        "noBlocks":         no_blocks,
+        "stalledSince":     stalled_since,
+        "wall_time":        now_wall,
     }
+
+    # Update last known good block
+    _last_known_block = snap
+    return snap
 
 
 THREAD_ID_MAIN = "00000000000000000000000000000000000000000000000000000000000000000000"
@@ -579,6 +630,81 @@ def tier_progress(in_epoch):
 # Text builders
 # ============================================================
 
+def build_speed_text(snapshot):
+    blk_sec = snapshot.get("sampleBlockSec")
+    cb      = snapshot["currentHeight"]
+    cur_ts  = snapshot.get("currentTimestamp") or int(datetime.now(UTC).timestamp())
+    dt_utc  = datetime.fromtimestamp(cur_ts, UTC)
+    dt_ist  = dt_utc.astimezone(IST)
+
+    if blk_sec and blk_sec > 0:
+        bps = 1 / blk_sec
+        speed_str = f"{bps:.2f} blocks/sec  ({blk_sec:.3f}s/block)"
+    else:
+        speed_str = "calculating…"
+
+    emoji, extra = network_status_emoji(snapshot)
+    line = (
+        f"{emoji} Live Block Speed\n"
+        f"• Block: <code>{cb:,}</code>\n"
+        f"• Time: {dt_ist.strftime('%d/%m %I:%M:%S %p')} IST\n"
+        f"• Speed: {speed_str}"
+    )
+    if extra:
+        line += f"\n{extra}"
+    return line
+
+
+def _stop_button(cb_data):
+    return InlineKeyboardMarkup([[InlineKeyboardButton("⏹ Stop", callback_data=cb_data)]])
+
+
+async def _live_blocks_loop(chat, forum, msg_id):
+    """Auto-update the /blocks message every 5 seconds until stopped."""
+    try:
+        while True:
+            await asyncio.sleep(5)
+            if chat not in _live_blocks:
+                break
+            try:
+                snap = await get_live_block_snapshot()
+                text = build_blocks_text(snap)
+                await bot.edit_message_text(
+                    chat_id=int(chat), message_id=msg_id,
+                    text=text, parse_mode="HTML",
+                    reply_markup=_stop_button(CB_LIVE_BLOCKS),
+                )
+            except Exception as e:
+                if "message is not modified" not in str(e).lower():
+                    print(f"live_blocks_loop: {e}")
+                    break
+    finally:
+        _live_blocks.pop(chat, None)
+
+
+async def _live_speed_loop(chat, forum, msg_id):
+    """Auto-update the /speed message every 5 seconds until stopped."""
+    try:
+        while True:
+            await asyncio.sleep(5)
+            if chat not in _live_speed:
+                break
+            try:
+                snap = await get_live_block_snapshot()
+                text = build_speed_text(snap)
+                await bot.edit_message_text(
+                    chat_id=int(chat), message_id=msg_id,
+                    text=text, parse_mode="HTML",
+                    reply_markup=_stop_button("live_speed_stop"),
+                )
+            except Exception as e:
+                if "message is not modified" not in str(e).lower():
+                    print(f"live_speed_loop: {e}")
+                    break
+    finally:
+        _live_speed.pop(chat, None)
+
+
 def build_dashboard_text(snapshot):
     cb      = snapshot["currentHeight"]
     cur_ts  = snapshot.get("currentTimestamp") or int(datetime.now(UTC).timestamp())
@@ -618,6 +744,43 @@ def build_dashboard_text(snapshot):
     )
 
 
+def network_status_emoji(snapshot):
+    """
+    Returns (emoji, extra_line) based on block production health.
+    extra_line is empty string or a second line of text.
+    """
+    blk_sec  = snapshot.get("sampleBlockSec")
+    cur_ts   = snapshot.get("currentTimestamp") or 0
+    reachable = snapshot.get("reachable", True)
+    no_blocks = snapshot.get("noBlocks", False)
+    stalled_since = snapshot.get("stalledSince")   # unix ts of last known block
+
+    if not reachable:
+        return "🔴", "Network is unreachable!"
+    if no_blocks or stalled_since:
+        last_seen = ""
+        if stalled_since:
+            dt = datetime.fromtimestamp(stalled_since, UTC).astimezone(IST)
+            last_seen = dt.strftime("%d/%m %I:%M:%S %p IST")
+        return "❌", f"No blocks produced since {last_seen}".strip()
+    if blk_sec and blk_sec > AVG_BLOCK_TIME * 3:
+        return "🔻", ""
+    return "⏳", ""
+
+
+def format_duration_with_sec(seconds):
+    """Like format_duration but includes seconds."""
+    seconds = max(0, int(seconds))
+    h = seconds // 3600
+    m = (seconds % 3600) // 60
+    s = seconds % 60
+    if h:
+        return f"{h}h {m}m {s}s"
+    if m:
+        return f"{m}m {s}s"
+    return f"{s}s"
+
+
 def build_pin_text(snapshot):
     cb      = snapshot["currentHeight"]
     cur_ts  = snapshot.get("currentTimestamp") or int(datetime.now(UTC).timestamp())
@@ -626,13 +789,12 @@ def build_pin_text(snapshot):
     _, start, reset = current_epoch_bounds(cb)
     left      = max(0, reset - cb)
     remaining = left * blk_sec
-    reset_dt  = datetime.fromtimestamp(cur_ts, UTC) + timedelta(seconds=remaining)
-    reset_ist = reset_dt.astimezone(IST)
 
-    return (
-        f"⏳ Time Left To Reset: {format_duration(remaining)}\n"
-        f"📌 Est. reset: {reset_ist.strftime('%d/%m %I:%M %p')} IST"
-    )
+    emoji, extra = network_status_emoji(snapshot)
+    line1 = f"{emoji} Time Left To Reset: {format_duration_with_sec(remaining)}"
+    if extra:
+        return f"{line1}\n{extra}"
+    return line1
 
 
 def build_blocks_text(snapshot):
@@ -641,12 +803,15 @@ def build_blocks_text(snapshot):
     dt_utc  = datetime.fromtimestamp(cur_ts, UTC)
     dt_ist  = dt_utc.astimezone(IST)
     dt_cest = dt_utc.astimezone(CEST)
+    blk_sec = snapshot.get("sampleBlockSec")
+    speed   = f"{blk_sec:.3f}s/block" if blk_sec else "calculating…"
     return (
         f"📦 Live Block Height\n"
-        f"• Block: {cb:,}\n"
-        f"• IST:  {dt_ist.strftime('%d/%m %I:%M %p')}\n"
-        f"• UTC:  {dt_utc.strftime('%d/%m %I:%M %p')}\n"
-        f"• CEST: {dt_cest.strftime('%d/%m %I:%M %p')}"
+        f"• Block: <code>{cb:,}</code>\n"
+        f"• IST:  {dt_ist.strftime('%d/%m %I:%M:%S %p')}\n"
+        f"• UTC:  {dt_utc.strftime('%d/%m %I:%M:%S %p')}\n"
+        f"• CEST: {dt_cest.strftime('%d/%m %I:%M:%S %p')}\n"
+        f"• Speed: {speed}"
     )
 
 # ============================================================
@@ -1142,6 +1307,38 @@ async def handle(update: Update):
         cq   = update.callback_query
         data = cq.data or ""
 
+        # ⏹ Stop live blocks
+        if data == CB_LIVE_BLOCKS:
+            entry = _live_blocks.pop(chat, None)
+            if entry:
+                t = entry.get("task")
+                if t: t.cancel()
+            try:
+                await cq.answer("⏹ Live updates stopped.")
+                await bot.edit_message_reply_markup(
+                    chat_id=int(chat), message_id=cq.message.message_id,
+                    reply_markup=_refresh_button(),
+                )
+            except Exception:
+                pass
+            return
+
+        # ⏹ Stop live speed
+        if data == "live_speed_stop":
+            entry = _live_speed.pop(chat, None)
+            if entry:
+                t = entry.get("task")
+                if t: t.cancel()
+            try:
+                await cq.answer("⏹ Live speed stopped.")
+                await bot.edit_message_reply_markup(
+                    chat_id=int(chat), message_id=cq.message.message_id,
+                    reply_markup=None,
+                )
+            except Exception:
+                pass
+            return
+
         # 🔃 Update button on dashboard
         if data == CB_UPDATE_DASHBOARD:
             # Show animated popup notifications
@@ -1244,15 +1441,39 @@ async def handle(update: Update):
         asyncio.create_task(heal_pending_records(store, sha))
         return
 
-    # /blocks — live block height with 🔄 Refresh inline button
+    # /blocks — live block height, auto-updates every 5s
     if cmd == "/blocks":
+        # Stop any existing live loop for this chat first
+        if chat in _live_blocks:
+            old_task = _live_blocks.pop(chat, {}).get("task")
+            if old_task:
+                old_task.cancel()
         snapshot = await loading_flow(
             chat, forum,
             ["📡 Connecting to blockchain…", "🔍 Fetching block height…"],
             get_live_block_snapshot(),
         )
-        await send_text(chat, build_blocks_text(snapshot),
-                        forum=forum, reply_markup=_refresh_button())
+        msg = await send_text(chat, build_blocks_text(snapshot),
+                              forum=forum, reply_markup=_stop_button(CB_LIVE_BLOCKS))
+        task = asyncio.create_task(_live_blocks_loop(chat, forum, msg.message_id))
+        _live_blocks[chat] = {"msg_id": msg.message_id, "forum": forum, "task": task}
+        return
+
+    # /speed — live block production speed, auto-updates every 5s
+    if cmd == "/speed":
+        if chat in _live_speed:
+            old_task = _live_speed.pop(chat, {}).get("task")
+            if old_task:
+                old_task.cancel()
+        snapshot = await loading_flow(
+            chat, forum,
+            ["📡 Connecting to blockchain…", "⚡ Measuring block speed…"],
+            get_live_block_snapshot(),
+        )
+        msg = await send_text(chat, build_speed_text(snapshot),
+                              forum=forum, reply_markup=_stop_button("live_speed_stop"))
+        task = asyncio.create_task(_live_speed_loop(chat, forum, msg.message_id))
+        _live_speed[chat] = {"msg_id": msg.message_id, "forum": forum, "task": task}
         return
 
     # /analysis — last 3 completed epochs
@@ -1278,87 +1499,97 @@ async def handle(update: Update):
             await send_chunked(chat, report, forum=forum)
         return
 
-    # /epoch <no> — single epoch exact report
+    # /epoch — single or multiple epochs: /epoch 205  or  /epoch 205,206,207
     if cmd == "/epoch":
 
-        parts = raw_text.split()
-        if len(parts) < 2:
-            await send_text(chat, "❌ Usage: /epoch 205", forum=forum)
+        # Parse all epoch numbers from the command, supporting space or comma separation
+        # e.g. "/epoch 205,206,207" or "/epoch 205 206 207"
+        arg_str = raw_text[len("/epoch"):].strip().lstrip("!")
+        tokens  = [t.strip() for t in arg_str.replace(",", " ").split() if t.strip()]
+        if not tokens:
+            await send_text(chat, "❌ Usage: /epoch 205  or  /epoch 205,206,207", forum=forum)
             return
-        try:
-            epoch_no = int(parts[1])
-        except Exception:
-            await send_text(chat, "❌ Invalid epoch number.", forum=forum)
+
+        epoch_nos = []
+        for t in tokens:
+            try:
+                en = int(t)
+                if en >= 1:
+                    epoch_nos.append(en)
+            except Exception:
+                pass
+
+        if not epoch_nos:
+            await send_text(chat, "❌ Invalid epoch number(s).", forum=forum)
             return
-        if epoch_no < 1:
-            await send_text(chat, "❌ Epoch number must be 1 or higher.", forum=forum)
-            return
+
+        # Deduplicate and cap at 10 to avoid abuse
+        epoch_nos = list(dict.fromkeys(epoch_nos))[:10]
+
+        def _fill_reset_from_next(r, next_r):
+            if not next_r or not next_r.get("start_timestamp"):
+                return False
+            r["reset_timestamp"]  = next_r["start_timestamp"]
+            r["reset_fmt"]        = next_r.get("start_fmt", "pending")
+            r["exact_reset_time"] = next_r.get("exact_start_time", "pending")
+            r["reset_hash"]       = next_r.get("start_hash")
+            r["reset_url"]        = next_r.get("start_url")
+            st = r.get("start_timestamp")
+            rt = r["reset_timestamp"]
+            if st and rt and rt > st:
+                dur = rt - st
+                r["epoch_duration"]         = format_duration(dur)
+                r["epoch_duration_seconds"] = dur
+            return True
 
         async def epoch_job():
-            s, sh = await load_data_async()
-            rec   = find_history_record(s, epoch_no)
+            s, sh    = await load_data_async()
+            results  = []
+            changed  = False
+            for epoch_no in epoch_nos:
+                rec = find_history_record(s, epoch_no)
+                if rec and not rec.get("reset_timestamp"):
+                    next_rec = find_history_record(s, epoch_no + 1)
+                    if _fill_reset_from_next(rec, next_rec):
+                        changed = True
+                if rec is None:
+                    next_rec       = find_history_record(s, epoch_no + 1)
+                    prefetch_reset = None
+                    if next_rec and next_rec.get("start_timestamp"):
+                        prefetch_reset = (
+                            next_rec["start_timestamp"],
+                            next_rec.get("exact_start_time"),
+                            next_rec.get("start_hash"),
+                        )
+                    rec = await build_epoch_record(epoch_no, prefetch_reset=prefetch_reset)
+                    if rec:
+                        s["history"].append(rec)
+                        changed = True
+                results.append((epoch_no, rec))
+            if changed:
+                s["history"].sort(key=lambda x: normalize_uint(x.get("epoch_no")))
+                await save_data_async(s, sh)
+            return results
 
-            def _fill_reset_from_next(r, next_r):
-                """Fill missing reset fields in r using next epoch's start. Returns True if changed."""
-                if not next_r or not next_r.get("start_timestamp"):
-                    return False
-                r["reset_timestamp"]  = next_r["start_timestamp"]
-                r["reset_fmt"]        = next_r.get("start_fmt", "pending")
-                r["exact_reset_time"] = next_r.get("exact_start_time", "pending")
-                r["reset_hash"]       = next_r.get("start_hash")
-                r["reset_url"]        = next_r.get("start_url")
-                st = r.get("start_timestamp")
-                rt = r["reset_timestamp"]
-                if st and rt and rt > st:
-                    dur = rt - st
-                    r["epoch_duration"]         = format_duration(dur)
-                    r["epoch_duration_seconds"] = dur
-                return True
-
-            # Always check if next epoch's start can fill a missing reset —
-            # even if the record already exists (it may have been stored before
-            # epoch N+1 was cached).
-            if rec and not rec.get("reset_timestamp"):
-                next_rec = find_history_record(s, epoch_no + 1)
-                if _fill_reset_from_next(rec, next_rec):
-                    s["history"].sort(key=lambda x: normalize_uint(x.get("epoch_no")))
-                    await save_data_async(s, sh)
-                    return rec
-
-            if rec is None:
-                prefetch_reset = None
-                next_rec = find_history_record(s, epoch_no + 1)
-                if next_rec and next_rec.get("start_timestamp"):
-                    prefetch_reset = (
-                        next_rec["start_timestamp"],
-                        next_rec.get("exact_start_time"),
-                        next_rec.get("start_hash"),
-                    )
-                rec = await build_epoch_record(epoch_no, prefetch_reset=prefetch_reset)
-                if rec:
-                    s["history"].append(rec)
-                    s["history"].sort(key=lambda x: normalize_uint(x.get("epoch_no")))
-                    await save_data_async(s, sh)
-            return rec
-
-        rec = await loading_flow(
+        label = f"Epoch {epoch_nos[0]}" if len(epoch_nos) == 1 else f"{len(epoch_nos)} epochs"
+        results = await loading_flow(
             chat, forum,
-            [f"🔎 Loading Epoch {epoch_no}…", "📡 Fetching block timestamps…", "📖 Building report…"],
+            [f"🔎 Loading {label}…", "📡 Fetching block timestamps…", "📖 Building report…"],
             epoch_job(),
         )
-        if not rec:
-            await send_text(
-                chat,
-                f"⚠️ Epoch {epoch_no} — timestamps unavailable\n\n"
-                f"• Start Block: {epoch_start_block(epoch_no):,}\n"
-                f"• Reset Block: {epoch_reset_block(epoch_no):,}\n\n"
-                f"The node could not resolve these blocks.\n"
-                f"This can happen for very old epochs or during node sync.\n"
-                f"Try again in a moment or use a more recent epoch number.",
-                forum=forum,
-            )
-            return
-        await send_text(chat, build_epoch_report(rec), forum=forum)
+
+        for epoch_no, rec in results:
+            if not rec:
+                await send_text(
+                    chat,
+                    f"⚠️ Epoch {epoch_no} — timestamps unavailable\n"
+                    f"• Start Block: <code>{epoch_start_block(epoch_no):,}</code>\n"
+                    f"• Reset Block: <code>{epoch_reset_block(epoch_no):,}</code>\n"
+                    f"The node could not resolve these blocks.",
+                    forum=forum,
+                )
+            else:
+                await send_text(chat, build_epoch_report(rec), forum=forum)
         return
 
     # /help
@@ -1369,7 +1600,9 @@ async def handle(update: Update):
             "📊 /status    — Edit dashboard & pin in place\n"
             "📦 /blocks    — Live block height with Refresh button\n"
             "📈 /analysis  — Full epoch history (all epochs)\n"
-            "🔎 /epoch 205 — Exact report for a single epoch\n"
+            "🔎 /epoch 205  — Exact report for a single epoch\n"
+            "🔎 /epoch 205,206 — Report for multiple epochs\n"
+            "⚡ /speed       — Live block production speed\n"
             "ℹ️ /help      — Show this help\n\n"
             "💡 All commands work with @BotUsername suffix in groups.\n"
             "   e.g. /start@epoch_helper_bot"
